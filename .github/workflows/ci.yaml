@@ -6,18 +6,16 @@ on:
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: "10"
+      - uses: pnpm/action-setup@v5
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -32,18 +30,19 @@ jobs:
         run: pnpm --filter @eap/web build
 
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     defaults:
       run:
         working-directory: services/business-api
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version-file: services/business-api/go.mod
+          cache-dependency-path: services/business-api/go.mod
 
       - name: Vet
         run: go vet ./...
