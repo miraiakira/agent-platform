@@ -1,0 +1,11 @@
+{
+  "name": "@eap/business-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "go run ./cmd/server",
+    "build": "go build -o bin/business-api ./cmd/server",
+    "test": "go test ./...",
+    "lint": "go vet ./..."
+  }
+}
