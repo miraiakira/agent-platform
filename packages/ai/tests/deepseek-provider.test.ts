@@ -65,4 +65,52 @@ describe("DeepSeekProvider", () => {
     expect(() => createModelProvider({ provider: "deepseek" })).toThrow("Missing LLM_API_KEY or LLM_MODEL");
     expect(() => new DeepSeekProvider({ ...config, apiKey: "" })).toThrow("Missing API key or model");
   });
+
+  it("cancels a request after fetch has started", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn((_url: unknown, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => {
+          reject(new DOMException("Request aborted", "AbortError"));
+        }, { once: true });
+        queueMicrotask(() => controller.abort());
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new DeepSeekProvider(config).generate({
+      messages,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: "CANCELLED", statusCode: 499 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an SDK request timeout to TIMEOUT", async () => {
+    const fetch = vi.fn((_url: unknown, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => {
+          reject(new DOMException("Request aborted", "AbortError"));
+        }, { once: true });
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const controller = new AbortController();
+
+    await expect(new DeepSeekProvider(config).generate({
+      messages,
+      signal: controller.signal,
+      timeoutMs: 10,
+    })).rejects.toMatchObject({ code: "TIMEOUT", statusCode: 504 });
+    expect(controller.signal.aborted).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a network connection failure to PROVIDER_ERROR", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(new DeepSeekProvider(config).generate({ messages }))
+      .rejects.toMatchObject({ code: "PROVIDER_ERROR", statusCode: 502 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

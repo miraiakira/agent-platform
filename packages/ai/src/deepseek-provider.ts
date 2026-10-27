@@ -110,7 +110,10 @@ export class DeepSeekProvider implements ModelProvider {
         );
       }
 
-      if (options.signal?.aborted) {
+      if (
+        error instanceof OpenAI.APIUserAbortError ||
+        options.signal?.aborted
+      ) {
         throw new AIError(
           "CANCELLED",
           "Model request cancelled",
