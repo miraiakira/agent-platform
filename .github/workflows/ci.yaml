@@ -20,6 +20,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: AI Package Typecheck
+        run: pnpm --filter @eap/ai typecheck
+
+      - name: AI Package Test
+        run: pnpm --filter @eap/ai test
+
       - name: Lint
         run: pnpm --filter @eap/web lint
 
