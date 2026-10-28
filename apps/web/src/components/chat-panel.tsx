@@ -11,29 +11,27 @@ import {
 } from "antd";
 import { useRef, useState } from "react";
 
+import {
+  readSSE,
+  type ChatStreamEvent,
+} from "@/lib/sse";
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
 
-type GenerateResult = {
-  id: string;
-  model: string;
-  provider: string;
-  content: string;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
-};
+type TokenUsage = Extract<
+  ChatStreamEvent,
+  { type: "usage" }
+>["usage"];
 
 export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [lastResult, setLastResult] =
-    useState<GenerateResult | null>(null);
+  const [usage, setUsage] = useState<TokenUsage | null>(null);
+  const [status, setStatus] = useState("Ready");
 
   const controllerRef = useRef<AbortController | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -43,20 +41,32 @@ export function ChatPanel() {
 
     if (!content || loading) return;
 
+    const previousMessages = messages;
+
     const nextMessages: ChatMessage[] = [
-      ...messages,
+      ...previousMessages,
       { role: "user", content },
     ];
 
-    setMessages(nextMessages);
+    // Create a placeholder for streaming text.
+    setMessages([
+      ...nextMessages,
+      { role: "assistant", content: "" },
+    ]);
+
     setInput("");
+    setUsage(null);
     setLoading(true);
+    setStatus("Generating");
 
     const controller = new AbortController();
     controllerRef.current = controller;
 
+    let receivedText = "";
+    let completed = false;
+
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -67,38 +77,74 @@ export function ChatPanel() {
         signal: controller.signal,
       });
 
-      const data: unknown = await response.json();
-
-      if (!response.ok) {
-        throw new Error("Model request failed");
+      if (!response.ok || !response.body) {
+        throw new Error(
+          `Stream request failed: ${response.status}`,
+        );
       }
 
-      const result = data as GenerateResult;
+      for await (const event of readSSE(response.body)) {
+        if (controller.signal.aborted) break;
 
-      setMessages([
-        ...nextMessages,
-        {
-          role: "assistant",
-          content: result.content,
-        },
-      ]);
+        switch (event.type) {
+          case "text-delta":
+            receivedText += event.text;
 
-      setLastResult(result);
+            setMessages([
+              ...nextMessages,
+              {
+                role: "assistant",
+                content: receivedText,
+              },
+            ]);
+            break;
+
+          case "usage":
+            setUsage(event.usage);
+            break;
+
+          case "done":
+            completed = true;
+            setStatus("Completed");
+            break;
+
+          case "error":
+            throw new Error(
+              `${event.code}: ${event.message}`,
+            );
+        }
+
+        if (completed) break;
+      }
+
+      if (!completed && !controller.signal.aborted) {
+        throw new Error("Stream ended without done event");
+      }
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.name === "AbortError"
-      ) {
-        messageApi.info("Request cancelled");
+      if (controller.signal.aborted) {
+        setStatus("Cancelled");
+        messageApi.info("Generation stopped");
       } else {
-        messageApi.error("Failed to generate response");
+        setStatus("Failed");
+        messageApi.error(
+          error instanceof Error
+            ? error.message
+            : "Streaming failed",
+        );
+      }
+    } finally {
+      if (!completed) {
+        if (receivedText) {
+          // Preserve partial output but do not reuse it as
+          // completed conversation context.
+          setMessages(previousMessages);
+          setInput(content);
+        } else {
+          setMessages(previousMessages);
+          setInput(content);
+        }
       }
 
-      // 请求失败时保留之前的成功对话，
-      // 恢复输入内容，避免重复提交失败的用户消息。
-      setMessages(messages);
-      setInput(content);
-    } finally {
       controllerRef.current = null;
       setLoading(false);
     }
@@ -106,13 +152,11 @@ export function ChatPanel() {
 
   return (
     <Card
-      title="AI Chat"
+      title="AI Chat · Streaming"
       extra={
-        lastResult && (
-          <Tag color="blue">
-            {lastResult.provider} / {lastResult.model}
-          </Tag>
-        )
+        <Tag color={loading ? "processing" : "default"}>
+          {status}
+        </Tag>
       }
     >
       {contextHolder}
@@ -138,15 +182,18 @@ export function ChatPanel() {
             </Typography.Text>
 
             <div className="mt-1 whitespace-pre-wrap">
-              {item.content}
+              {item.content ||
+                (loading ? "Thinking..." : "")}
             </div>
           </div>
         ))}
       </div>
 
-      {lastResult?.usage && (
+      {usage && (
         <Typography.Text type="secondary">
-          Tokens: {lastResult.usage.totalTokens}
+          Input: {usage.inputTokens} · Output:{" "}
+          {usage.outputTokens} · Total:{" "}
+          {usage.totalTokens}
         </Typography.Text>
       )}
 

@@ -114,3 +114,116 @@ describe("DeepSeekProvider", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+it("streams text deltas and usage", async () => {
+  const chunks = [
+    {
+      id: "stream-1",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          delta: { content: "你好" },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      id: "stream-1",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          delta: { content: "，世界" },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      id: "stream-1",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          delta: {},
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 3,
+        total_tokens: 8,
+      },
+    },
+  ];
+
+  const sse =
+    chunks.map((chunk) =>
+      `data: ${JSON.stringify(chunk)}\n\n`,
+    ).join("") + "data: [DONE]\n\n";
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response(sse, {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }),
+    ),
+  );
+
+  const provider = new DeepSeekProvider(config);
+  const events = [];
+
+  for await (const event of provider.stream({ messages })) {
+    events.push(event);
+  }
+
+  expect(events).toEqual([
+    { type: "text-delta", text: "你好" },
+    { type: "text-delta", text: "，世界" },
+    {
+      type: "usage",
+      usage: {
+        inputTokens: 5,
+        outputTokens: 3,
+        totalTokens: 8,
+      },
+    },
+    { type: "done" },
+  ]);
+});
+
+it("maps stream failures to PROVIDER_ERROR", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error("Connection lost"));
+    },
+  });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(
+      new Response(body, {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }),
+    ),
+  );
+
+  const provider = new DeepSeekProvider(config);
+
+  const consume = async () => {
+    for await (const _event of provider.stream({
+      messages,
+    })) {
+      // Consume the stream.
+    }
+  };
+
+  await expect(consume()).rejects.toMatchObject({
+    code: "PROVIDER_ERROR",
+  });
+});

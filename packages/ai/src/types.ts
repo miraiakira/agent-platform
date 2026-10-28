@@ -31,4 +31,26 @@ export interface ModelProvider {
   generate(
     options: GenerateOptions,
   ): Promise<GenerateResult>;
+
+  stream(
+    options: GenerateOptions,
+  ): AsyncIterable<StreamEvent>;
 }
+
+export type StreamEvent =
+  | {
+      type: "text-delta";
+      text: string;
+    }
+  | {
+      type: "usage";
+      usage: TokenUsage;
+    }
+  | {
+      type: "done";
+    }
+  | {
+      type: "error";
+      code: string;
+      message: string;
+    };

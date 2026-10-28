@@ -5,3 +5,4 @@ export * from "./factory";
 export * from "./mock-provider";
 export * from "./openai-provider";
 export * from "./deepseek-provider";
+export * from "./sse";

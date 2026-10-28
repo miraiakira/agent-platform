@@ -2,6 +2,7 @@ import type {
   GenerateOptions,
   GenerateResult,
   ModelProvider,
+  StreamEvent,
 } from "./types";
 
 export class AIService {
@@ -13,5 +14,11 @@ export class AIService {
     options: GenerateOptions,
   ): Promise<GenerateResult> {
     return this.provider.generate(options);
+  }
+
+  stream(
+    options: GenerateOptions,
+  ): AsyncIterable<StreamEvent> {
+    return this.provider.stream(options);
   }
 }

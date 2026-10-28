@@ -31,6 +31,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm --filter @eap/web typecheck
+      
+      - name: Web Streaming Tests
+        run: pnpm --filter @eap/web test
 
       - name: Build
         run: pnpm --filter @eap/web build
