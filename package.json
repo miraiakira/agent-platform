@@ -7,8 +7,8 @@
     "dev": "pnpm --parallel --filter @eap/web --filter @eap/business-api dev",
     "build": "pnpm --filter @eap/web build",
     "lint": "pnpm --filter @eap/web lint && pnpm --filter @eap/business-api lint",
-    "typecheck": "pnpm --filter @eap/ai typecheck && pnpm --filter @eap/web typecheck",
-    "test": "pnpm --filter @eap/ai test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
+    "typecheck": "pnpm --filter @eap/tools typecheck && pnpm --filter @eap/ai typecheck && pnpm --filter @eap/web typecheck",
+    "test": "pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   }
 }

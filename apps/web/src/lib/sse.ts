@@ -9,7 +9,18 @@ export type ChatStreamEvent =
       };
     }
   | { type: "done" }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  | {
+    type: "tool-start";
+    toolCallId: string;
+    toolName: string;
+  }
+  | {
+      type: "tool-result";
+      toolCallId: string;
+      toolName: string;
+      success: boolean;
+    };
 
 export async function* readSSE(
   body: ReadableStream<Uint8Array>,

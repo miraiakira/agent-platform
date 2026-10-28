@@ -15,6 +15,11 @@ func NewHandler() http.Handler {
 
 	mux.HandleFunc("GET /api/health", healthHandler)
 
+	mux.HandleFunc(
+		"GET /api/transactions/high-risk",
+		highRiskTransactionsHandler,
+	)
+
 	return mux
 }
 

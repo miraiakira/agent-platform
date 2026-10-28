@@ -26,6 +26,12 @@ jobs:
       - name: AI Package Test
         run: pnpm --filter @eap/ai test
 
+      - name: Tool Registry Typecheck
+        run: pnpm --filter @eap/tools typecheck
+
+      - name: Tool Registry Tests
+        run: pnpm --filter @eap/tools test
+
       - name: Lint
         run: pnpm --filter @eap/web lint
 

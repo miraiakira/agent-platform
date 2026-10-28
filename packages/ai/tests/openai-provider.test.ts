@@ -66,3 +66,57 @@ describe("OpenAIProvider streaming", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("OpenAIProvider agent methods", () => {
+  const history = [
+    { role: "user" as const, content: "Check transactions" },
+    { role: "assistant" as const, content: null, tool_calls: [
+      { id: "call-1", type: "function" as const, function: { name: "query", arguments: "{}" } },
+    ] },
+    { role: "tool" as const, tool_call_id: "call-1", content: "[]" },
+  ];
+  const expectedInput = [
+    { role: "user", content: "Check transactions" },
+    { type: "function_call", call_id: "call-1", name: "query", arguments: "{}" },
+    { type: "function_call_output", call_id: "call-1", output: "[]" },
+  ];
+
+  it("returns tool calls and sends tool history in Responses format", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call-2", name: "query", arguments: "{}" }],
+    }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "test-model" });
+    expect(await provider.generateWithTools({ messages: history, tools: [] })).toEqual({
+      content: null,
+      toolCalls: [{ id: "call-2", type: "function", function: { name: "query", arguments: "{}" } }],
+      finishReason: "tool_calls",
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({
+      input: expectedInput, store: false, parallel_tool_calls: false,
+    });
+  });
+
+  it("streams a final answer using tool results", async () => {
+    const fetch = mockStream([
+      { type: "response.output_text.delta", delta: "No transactions" },
+      { type: "response.completed", response: {} },
+    ]);
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "test-model" });
+    const events = [];
+    for await (const event of provider.streamAgentFinal({ messages: history })) events.push(event);
+    expect(events).toEqual([{ type: "text-delta", text: "No transactions" }, { type: "done" }]);
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({
+      input: expectedInput, tool_choice: "none", stream: true,
+    });
+  });
+
+  it("does not send cancelled tool requests", async () => {
+    const fetch = mockStream([]);
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "test-model" });
+    await expect(provider.generateWithTools({ messages: [], tools: [], signal: AbortSignal.abort() }))
+      .rejects.toMatchObject({ code: "CANCELLED" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});

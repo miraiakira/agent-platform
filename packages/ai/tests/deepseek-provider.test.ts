@@ -113,9 +113,8 @@ describe("DeepSeekProvider", () => {
       .rejects.toMatchObject({ code: "PROVIDER_ERROR", statusCode: 502 });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-});
-
-it("streams text deltas and usage", async () => {
+  
+  it("streams text deltas and usage", async () => {
   const chunks = [
     {
       id: "stream-1",
@@ -193,37 +192,99 @@ it("streams text deltas and usage", async () => {
     },
     { type: "done" },
   ]);
-});
-
-it("maps stream failures to PROVIDER_ERROR", async () => {
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.error(new Error("Connection lost"));
-    },
   });
 
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue(
-      new Response(body, {
-        headers: {
-          "content-type": "text/event-stream",
+  it("maps stream failures to PROVIDER_ERROR", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("Connection lost"));
+      },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    );
+
+    const provider = new DeepSeekProvider(config);
+
+    const consume = async () => {
+      for await (const _event of provider.stream({
+        messages,
+      })) {
+        // Consume the stream.
+      }
+    };
+
+    await expect(consume()).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+    });
+  });
+
+  it("sends tools and normalizes tool calls", async () => {
+    const fetch = mockResponse({
+      id: "completion-tool-1",
+      model: config.model,
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call-1",
+                type: "function",
+                function: {
+                  name: "get_transactions",
+                  arguments: '{"limit":3}',
+                },
+              },
+            ],
+          },
         },
-      }),
-    ),
-  );
+      ],
+    });
 
-  const provider = new DeepSeekProvider(config);
+    const provider = new DeepSeekProvider(config);
 
-  const consume = async () => {
-    for await (const _event of provider.stream({
+    const result = await provider.generateWithTools({
       messages,
-    })) {
-      // Consume the stream.
-    }
-  };
+      tools: [
+        {
+          name: "get_transactions",
+          description: "Query transactions",
+          parameters: {
+            type: "object",
+            properties: {
+              limit: { type: "integer" },
+            },
+            required: ["limit"],
+          },
+        },
+      ],
+    });
 
-  await expect(consume()).rejects.toMatchObject({
-    code: "PROVIDER_ERROR",
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].function.name).toBe(
+      "get_transactions",
+    );
+
+    const requestBody = JSON.parse(
+      fetch.mock.calls[0][1].body,
+    );
+
+    expect(requestBody.tools[0].function.name).toBe(
+      "get_transactions",
+    );
+
+    expect(requestBody.tool_choice).toBe("auto");
   });
 });
+

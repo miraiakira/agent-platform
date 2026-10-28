@@ -26,12 +26,23 @@ type TokenUsage = Extract<
   { type: "usage" }
 >["usage"];
 
-export function ChatPanel() {
+export function ChatPanel({
+  endpoint = "/api/chat/stream",
+}: {
+  endpoint?: string;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [usage, setUsage] = useState<TokenUsage | null>(null);
   const [status, setStatus] = useState("Ready");
+  const [toolActivities, setToolActivities] = useState<
+    Array<{
+      id: string;
+      name: string;
+      status: "running" | "success" | "error";
+    }>
+  >([]);
 
   const controllerRef = useRef<AbortController | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -66,7 +77,7 @@ export function ChatPanel() {
     let completed = false;
 
     try {
-      const response = await fetch("/api/chat/stream", {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -108,6 +119,32 @@ export function ChatPanel() {
             setStatus("Completed");
             break;
 
+          case "tool-start":
+            setToolActivities((previous) => [
+              ...previous,
+              {
+                id: event.toolCallId,
+                name: event.toolName,
+                status: "running",
+              },
+            ]);
+            break;
+
+          case "tool-result":
+            setToolActivities((previous) =>
+              previous.map((activity) =>
+                activity.id === event.toolCallId
+                  ? {
+                      ...activity,
+                      status: event.success
+                        ? "success"
+                        : "error",
+                    }
+                  : activity,
+              ),
+            );
+            break;
+
           case "error":
             throw new Error(
               `${event.code}: ${event.message}`,
@@ -147,6 +184,7 @@ export function ChatPanel() {
 
       controllerRef.current = null;
       setLoading(false);
+      setToolActivities([]);
     }
   }
 
@@ -167,7 +205,32 @@ export function ChatPanel() {
             Ask your AI assistant a question.
           </Typography.Text>
         )}
+        {toolActivities.length > 0 && (
+          <div className="mb-4 space-y-2">
+            {toolActivities.map((activity) => (
+              <div
+                key={activity.id}
+                className="flex items-center gap-2 rounded-lg bg-slate-50 p-3"
+              >
+                <span className="text-sm font-medium">
+                  {activity.name}
+                </span>
 
+                <Tag
+                  color={
+                    activity.status === "success"
+                      ? "success"
+                      : activity.status === "error"
+                        ? "error"
+                        : "processing"
+                  }
+                >
+                  {activity.status}
+                </Tag>
+              </div>
+            ))}
+          </div>
+        )}
         {messages.map((item, index) => (
           <div
             key={index}

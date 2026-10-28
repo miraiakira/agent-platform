@@ -11,11 +11,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@eap/tools": "workspace:*",
     "openai": "^7.45.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "zod": "^4.6.7"
   }
 }
