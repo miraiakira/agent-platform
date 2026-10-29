@@ -65,45 +65,61 @@ export function createBusinessTools(config: {
       url.searchParams.set("date", input.date);
       url.searchParams.set("limit", String(input.limit));
 
-      let response: Response;
-
       try {
-        response = await fetchImpl(url, {
+        const response = await fetchImpl(url, {
           headers: config.apiKey
-            ? { Authorization: `Bearer ${config.apiKey}` }
+            ? {
+                Authorization:
+                  `Bearer ${config.apiKey}`,
+              }
             : undefined,
           signal: context.signal,
         });
-      } catch {
+
+        if (!response.ok) {
+          throw new ToolError(
+            "UPSTREAM_ERROR",
+            `Business API returned HTTP ${response.status}`,
+          );
+        }
+
+        const payload: unknown = await response.json();
+
         if (context.signal?.aborted) {
-          throw new ToolError("CANCELLED", "Tool cancelled");
+          throw new ToolError(
+            "CANCELLED",
+            "Tool cancelled",
+          );
+        }
+
+        const parsed = responseSchema.safeParse(payload);
+
+        if (!parsed.success) {
+          throw new ToolError(
+            "INVALID_RESULT",
+            "Invalid business API response",
+          );
+        }
+
+        return parsed.data;
+      } catch (error) {
+        if (context.signal?.aborted) {
+          throw new ToolError(
+            "CANCELLED",
+            "Tool cancelled",
+          );
+        }
+
+        if (error instanceof ToolError) {
+          throw error;
         }
 
         throw new ToolError(
           "UPSTREAM_ERROR",
-          "Business API is unavailable",
+          "Business API request failed",
         );
       }
-
-      if (!response.ok) {
-        throw new ToolError(
-          "UPSTREAM_ERROR",
-          `Business API returned HTTP ${response.status}`,
-        );
-      }
-
-      const payload: unknown = await response.json();
-      const parsed = responseSchema.safeParse(payload);
-
-      if (!parsed.success) {
-        throw new ToolError(
-          "INVALID_RESULT",
-          "Business API returned invalid data",
-        );
-      }
-
-      return parsed.data;
-    },
+    }
   });
 
   return registry;

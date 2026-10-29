@@ -70,7 +70,21 @@ export async function POST(request: Request) {
   const runner = new AgentRunner({
     provider,
     tools,
-    maxModelCalls: 5,
+    budget: {
+      maxModelCalls: 5,
+      maxToolCalls: 8,
+      maxDurationMs: 60_000,
+      maxToolDurationMs: 10_000,
+      maxToolResultBytes: 16 * 1024,
+      maxToolRetries: 1,
+      maxOutputTokens: 2048,
+    },
+    onTrace(trace) {
+      console.info(
+        "[agent-trace]",
+        JSON.stringify(trace),
+      );
+    },
   });
 
   const encoder = new TextEncoder();
@@ -111,7 +125,6 @@ export async function POST(request: Request) {
         for await (const event of runner.run({
           messages,
           signal: abortController.signal,
-          timeoutMs: 30000,
         })) {
           if (abortController.signal.aborted) break;
 

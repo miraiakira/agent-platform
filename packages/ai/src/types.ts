@@ -47,9 +47,44 @@ export interface ModelProvider {
       messages: AgentMessage[];
       signal?: AbortSignal;
       timeoutMs?: number;
+      maxOutputTokens?: number;
     },
   ): AsyncIterable<StreamEvent>;
+
+  streamWithTools(
+    options: StreamWithToolsOptions,
+  ): AsyncIterable<ModelToolStreamEvent>;
 }
+
+export type AgentRuntimeEvent =
+  | {
+      type: "run-start";
+      traceId: string;
+    }
+  | {
+      type: "model-start";
+      iteration: number;
+    }
+  | {
+      type: "tool-start";
+      toolCallId: string;
+      toolName: string;
+    }
+  | {
+      type: "tool-result";
+      toolCallId: string;
+      toolName: string;
+      success: boolean;
+      attempts: number;
+    }
+  | {
+      type: "trace";
+      traceId: string;
+      durationMs: number;
+      modelCalls: number;
+      toolCalls: number;
+      usage: AgentUsage;
+    };
 
 export type StreamEvent =
   | {
@@ -58,7 +93,7 @@ export type StreamEvent =
     }
   | {
       type: "usage";
-      usage: TokenUsage;
+      usage: AgentUsage;
     }
   | {
       type: "done";
@@ -68,17 +103,7 @@ export type StreamEvent =
       code: string;
       message: string;
     }
-  | {
-    type: "tool-start";
-    toolCallId: string;
-    toolName: string;
-  }
-  | {
-    type: "tool-result";
-    toolCallId: string;
-    toolName: string;
-    success: boolean;
-  };
+  | AgentRuntimeEvent;
   
 
 export interface FunctionCall {
@@ -117,4 +142,39 @@ export interface ToolGenerateResult {
   content: string | null;
   toolCalls: FunctionCall[];
   finishReason: string | null;
+}
+
+// 模型 Token 使用量
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+// DeepSeek 工具调用流式事件
+export type ModelToolStreamEvent =
+  | {
+      type: "text-delta";
+      text: string;
+    }
+  | {
+      type: "tool-call-delta";
+      index: number;
+      id?: string;
+      name?: string;
+      arguments?: string;
+    }
+  | {
+      type: "usage";
+      usage: AgentUsage;
+    }
+  | {
+      type: "model-finish";
+      finishReason: string | null;
+    };
+
+// 支持工具调用的流式请求参数
+export interface StreamWithToolsOptions
+  extends ToolGenerateOptions {
+  maxOutputTokens?: number;
 }

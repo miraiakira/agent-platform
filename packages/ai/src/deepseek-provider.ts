@@ -8,6 +8,8 @@ import type {
   ToolGenerateOptions,
   ToolGenerateResult,
   AgentMessage,
+  ModelToolStreamEvent,
+  StreamWithToolsOptions,
 } from "./types";
 
 export interface DeepSeekProviderConfig {
@@ -368,6 +370,7 @@ export class DeepSeekProvider implements ModelProvider {
       messages: AgentMessage[];
       signal?: AbortSignal;
       timeoutMs?: number;
+      maxOutputTokens?: number;
     },
   ): AsyncIterable<StreamEvent> {
     try {
@@ -379,6 +382,9 @@ export class DeepSeekProvider implements ModelProvider {
             stream: true,
             stream_options: { include_usage: true },
             tool_choice: "none",
+            ...(options.maxOutputTokens
+            ? { max_tokens: options.maxOutputTokens }
+            : {}),
           },
           {
             signal: options.signal,
@@ -440,6 +446,141 @@ export class DeepSeekProvider implements ModelProvider {
       throw new AIError(
         "PROVIDER_ERROR",
         "Final answer streaming failed",
+        502,
+      );
+    }
+  }
+
+  async *streamWithTools(
+    options: StreamWithToolsOptions,
+  ): AsyncIterable<ModelToolStreamEvent> {
+    if (options.signal?.aborted) {
+      throw new AIError(
+        "CANCELLED",
+        "Model request cancelled",
+        499,
+      );
+    }
+
+    try {
+      const stream =
+        await this.client.chat.completions.create(
+          {
+            model: this.model,
+            messages: options.messages,
+            stream: true,
+            stream_options: {
+              include_usage: true,
+            },
+            ...(options.tools.length > 0
+              ? {
+                  tools: options.tools.map((tool) => ({
+                    type: "function" as const,
+                    function: {
+                      name: tool.name,
+                      description: tool.description,
+                      parameters: tool.parameters,
+                    },
+                  })),
+                  tool_choice: "auto" as const,
+                  parallel_tool_calls: false,
+                }
+              : {}),
+            ...(options.maxOutputTokens
+              ? { max_tokens: options.maxOutputTokens }
+              : {}),
+          },
+          {
+            signal: options.signal,
+            timeout: options.timeoutMs ?? 30000,
+          },
+        );
+
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+
+        if (choice?.delta.content) {
+          yield {
+            type: "text-delta",
+            text: choice.delta.content,
+          };
+        }
+
+        for (const call of choice?.delta.tool_calls ?? []) {
+          yield {
+            type: "tool-call-delta",
+            index: call.index,
+            id: call.id,
+            name:
+              call.type === "function"
+                ? call.function?.name
+                : undefined,
+            arguments:
+              call.type === "function"
+                ? call.function?.arguments
+                : undefined,
+          };
+        }
+
+        if (chunk.usage) {
+          yield {
+            type: "usage",
+            usage: {
+              inputTokens: chunk.usage.prompt_tokens,
+              outputTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+            },
+          };
+        }
+
+        if (choice?.finish_reason) {
+          yield {
+            type: "model-finish",
+            finishReason: choice.finish_reason,
+          };
+        }
+      }
+    } catch (error) {
+      if (error instanceof AIError) throw error;
+
+      if (
+        options.signal?.aborted ||
+        error instanceof OpenAI.APIUserAbortError
+      ) {
+        throw new AIError(
+          "CANCELLED",
+          "Model request cancelled",
+          499,
+        );
+      }
+
+      if (error instanceof OpenAI.APIConnectionTimeoutError) {
+        throw new AIError(
+          "TIMEOUT",
+          "Model request timed out",
+          504,
+        );
+      }
+
+      if (error instanceof OpenAI.AuthenticationError) {
+        throw new AIError(
+          "AUTH_ERROR",
+          "Model authentication failed",
+          502,
+        );
+      }
+
+      if (error instanceof OpenAI.RateLimitError) {
+        throw new AIError(
+          "RATE_LIMIT",
+          "Model rate limit exceeded",
+          429,
+        );
+      }
+
+      throw new AIError(
+        "PROVIDER_ERROR",
+        "Model streaming failed",
         502,
       );
     }

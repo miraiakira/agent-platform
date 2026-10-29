@@ -43,11 +43,15 @@ export function ChatPanel({
       status: "running" | "success" | "error";
     }>
   >([]);
+  const [traceId, setTraceId] = useState<string | null>(null);
+  const [modelIteration, setModelIteration] = useState(0);
 
   const controllerRef = useRef<AbortController | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
 
   async function sendMessage() {
+    setTraceId(null);
+    setModelIteration(0);
     const content = input.trim();
 
     if (!content || loading) return;
@@ -144,6 +148,18 @@ export function ChatPanel({
               ),
             );
             break;
+          
+          case "run-start":
+            setTraceId(event.traceId);
+            break;
+
+          case "model-start":
+            setModelIteration(event.iteration);
+            break;
+
+          case "trace":
+            setTraceId(event.traceId);
+            break;
 
           case "error":
             throw new Error(
@@ -188,6 +204,8 @@ export function ChatPanel({
     }
   }
 
+  const isAgentMode = endpoint === "/api/agent/stream";
+
   return (
     <Card
       title="AI Chat · Streaming"
@@ -229,6 +247,12 @@ export function ChatPanel({
                 </Tag>
               </div>
             ))}
+          </div>
+        )}
+        {isAgentMode && traceId && (
+          <div className="mb-3 flex gap-3 text-xs text-slate-500">
+            <span>Trace: {traceId.slice(0, 8)}</span>
+            <span>Model iteration: {modelIteration}</span>
           </div>
         )}
         {messages.map((item, index) => (

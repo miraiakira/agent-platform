@@ -7,6 +7,8 @@ import type {
   ToolGenerateOptions,
   ToolGenerateResult,
   AgentMessage,
+  ModelToolStreamEvent,
+  StreamWithToolsOptions,
 } from "./types";
 
 export class MockProvider implements ModelProvider {
@@ -160,5 +162,89 @@ export class MockProvider implements ModelProvider {
     }
 
     yield { type: "done" };
+  }
+
+  async *streamWithTools(
+    options: StreamWithToolsOptions,
+  ): AsyncIterable<ModelToolStreamEvent> {
+    if (options.signal?.aborted) {
+      throw new AIError("CANCELLED", "Cancelled", 499);
+    }
+
+    const hasToolResult = options.messages.some(
+      (message) => message.role === "tool",
+    );
+
+    if (!hasToolResult && options.tools.length > 0) {
+      const args = JSON.stringify({
+        date: new Date().toISOString().slice(0, 10),
+        limit: 3,
+      });
+
+      yield {
+        type: "tool-call-delta",
+        index: 0,
+        id: "mock-call-1",
+        name: "get_high_risk_transactions",
+        arguments: args.slice(0, 12),
+      };
+
+      yield {
+        type: "tool-call-delta",
+        index: 0,
+        arguments: args.slice(12),
+      };
+
+      yield {
+        type: "usage",
+        usage: {
+          inputTokens: 20,
+          outputTokens: 10,
+          totalTokens: 30,
+        },
+      };
+
+      yield {
+        type: "model-finish",
+        finishReason: "tool_calls",
+      };
+
+      return;
+    }
+
+    const result = [...options.messages]
+      .reverse()
+      .find((message) => message.role === "tool");
+
+    const content = result
+      ? `模拟分析结果：${result.content}`
+      : "模拟 Agent 回答";
+
+    for (const character of Array.from(content)) {
+      if (options.signal?.aborted) {
+        throw new AIError("CANCELLED", "Cancelled", 499);
+      }
+
+      yield {
+        type: "text-delta",
+        text: character,
+      };
+
+      await Promise.resolve();
+    }
+
+    yield {
+      type: "usage",
+      usage: {
+        inputTokens: 30,
+        outputTokens: 20,
+        totalTokens: 50,
+      },
+    };
+
+    yield {
+      type: "model-finish",
+      finishReason: "stop",
+    };
   }
 }

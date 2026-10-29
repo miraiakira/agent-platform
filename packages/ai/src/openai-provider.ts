@@ -7,6 +7,8 @@ import type {
   GenerateOptions,
   GenerateResult,
   ModelProvider,
+  ModelToolStreamEvent,
+  StreamWithToolsOptions,
   StreamEvent,
 } from "./types";
 
@@ -221,6 +223,101 @@ export class OpenAIProvider implements ModelProvider {
         throw new AIError("RATE_LIMIT", "Model rate limit exceeded", 429);
       }
       throw new AIError("PROVIDER_ERROR", "Tool-enabled model request failed", 502);
+    }
+  }
+
+  async *streamWithTools(
+    options: StreamWithToolsOptions,
+  ): AsyncIterable<ModelToolStreamEvent> {
+    if (options.signal?.aborted) {
+      throw new AIError("CANCELLED", "Model request cancelled", 499);
+    }
+
+    try {
+      const stream = await this.client.responses.create({
+        model: this.model,
+        store: false,
+        stream: true,
+        input: this.toResponseInput(options.messages),
+        ...(options.tools.length > 0 ? {
+          tools: options.tools.map((tool) => ({
+            type: "function" as const,
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+            strict: false,
+          })),
+          tool_choice: "auto" as const,
+          parallel_tool_calls: false,
+        } : {}),
+        ...(options.maxOutputTokens !== undefined
+          ? { max_output_tokens: options.maxOutputTokens }
+          : {}),
+      }, { signal: options.signal, timeout: options.timeoutMs ?? 30000 });
+
+      let hasToolCalls = false;
+      for await (const event of stream) {
+        if (options.signal?.aborted) {
+          throw new AIError("CANCELLED", "Model request cancelled", 499);
+        }
+
+        if (event.type === "response.output_text.delta") {
+          yield { type: "text-delta", text: event.delta };
+        } else if (event.type === "response.output_item.added" && event.item.type === "function_call") {
+          hasToolCalls = true;
+          yield {
+            type: "tool-call-delta",
+            index: event.output_index,
+            id: event.item.call_id,
+            name: event.item.name,
+            arguments: event.item.arguments,
+          };
+        } else if (event.type === "response.function_call_arguments.delta") {
+          yield {
+            type: "tool-call-delta",
+            index: event.output_index,
+            arguments: event.delta,
+          };
+        } else if (event.type === "response.completed") {
+          const usage = event.response.usage;
+          if (usage) {
+            yield {
+              type: "usage",
+              usage: {
+                inputTokens: usage.input_tokens,
+                outputTokens: usage.output_tokens,
+                totalTokens: usage.total_tokens,
+              },
+            };
+          }
+          yield { type: "model-finish", finishReason: hasToolCalls ? "tool_calls" : "stop" };
+          return;
+        } else if (event.type === "response.incomplete") {
+          throw new AIError("INVALID_RESPONSE", "Model response incomplete", 502);
+        } else if (event.type === "response.failed" || event.type === "error") {
+          throw new AIError("PROVIDER_ERROR", "Model streaming failed", 502);
+        }
+      }
+
+      if (options.signal?.aborted) {
+        throw new AIError("CANCELLED", "Model request cancelled", 499);
+      }
+      throw new AIError("INVALID_RESPONSE", "Model stream ended without completion", 502);
+    } catch (error) {
+      if (error instanceof AIError) throw error;
+      if (error instanceof OpenAI.APIConnectionTimeoutError) {
+        throw new AIError("TIMEOUT", "Model request timed out", 504);
+      }
+      if (error instanceof OpenAI.APIUserAbortError || options.signal?.aborted) {
+        throw new AIError("CANCELLED", "Model request cancelled", 499);
+      }
+      if (error instanceof OpenAI.AuthenticationError) {
+        throw new AIError("AUTH_ERROR", "Model authentication failed", 502);
+      }
+      if (error instanceof OpenAI.RateLimitError) {
+        throw new AIError("RATE_LIMIT", "Model rate limit exceeded", 429);
+      }
+      throw new AIError("PROVIDER_ERROR", "Model streaming failed", 502);
     }
   }
 

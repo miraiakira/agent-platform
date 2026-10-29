@@ -120,3 +120,65 @@ describe("OpenAIProvider agent methods", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+
+describe("OpenAIProvider streaming tools", () => {
+  async function collectTools(options = {}) {
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "test-model" });
+    const events = [];
+    for await (const event of provider.streamWithTools({ messages: [], tools: [], ...options })) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  it("maps tool call identity and argument fragments without duplicating completed arguments", async () => {
+    const fetch = mockStream([
+      { type: "response.output_item.added", output_index: 1,
+        item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "query", arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index: 1, delta: '{"id":' },
+      { type: "response.function_call_arguments.delta", output_index: 1, delta: '1}' },
+      { type: "response.function_call_arguments.done", output_index: 1, arguments: '{"id":1}' },
+      { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 } } },
+    ]);
+    expect(await collectTools({ maxOutputTokens: 128 })).toEqual([
+      { type: "tool-call-delta", index: 1, id: "call-1", name: "query", arguments: "" },
+      { type: "tool-call-delta", index: 1, arguments: '{"id":' },
+      { type: "tool-call-delta", index: 1, arguments: '1}' },
+      { type: "usage", usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } },
+      { type: "model-finish", finishReason: "tool_calls" },
+    ]);
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ stream: true, max_output_tokens: 128 });
+  });
+
+  it("finishes text responses with stop", async () => {
+    mockStream([
+      { type: "response.output_text.delta", delta: "Hello" },
+      { type: "response.completed", response: {} },
+    ]);
+    expect(await collectTools()).toEqual([
+      { type: "text-delta", text: "Hello" },
+      { type: "model-finish", finishReason: "stop" },
+    ]);
+  });
+
+  it.each([
+    ["response.failed", "PROVIDER_ERROR"],
+    ["response.incomplete", "INVALID_RESPONSE"],
+    ["error", "PROVIDER_ERROR"],
+  ])("rejects %s", async (type, code) => {
+    mockStream([{ type }]);
+    await expect(collectTools()).rejects.toMatchObject({ code });
+  });
+
+  it("rejects premature stream termination", async () => {
+    mockStream([]);
+    await expect(collectTools()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("does not send already cancelled requests", async () => {
+    const fetch = mockStream([]);
+    await expect(collectTools({ signal: AbortSignal.abort() })).rejects.toMatchObject({ code: "CANCELLED" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});

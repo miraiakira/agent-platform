@@ -20,6 +20,27 @@ export type ChatStreamEvent =
       toolCallId: string;
       toolName: string;
       success: boolean;
+      attempts: number;
+    }
+  | {
+    type: "run-start";
+    traceId: string;
+    }
+  | {
+      type: "model-start";
+      iteration: number;
+    }
+  | {
+      type: "trace";
+      traceId: string;
+      durationMs: number;
+      modelCalls: number;
+      toolCalls: number;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+      };
     };
 
 export async function* readSSE(
