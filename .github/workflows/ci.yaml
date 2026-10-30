@@ -8,6 +8,27 @@ jobs:
   frontend:
     runs-on: ubuntu-24.04
 
+    # Day 6: PostgreSQL 环境变量
+    env:
+      DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
+      TEST_DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
+
+    # Day 6: PostgreSQL Service
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: eap
+          POSTGRES_PASSWORD: eap_test_password
+          POSTGRES_DB: eap_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eap -d eap_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v5
 
@@ -20,11 +41,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # ------------------------------------
+      # Day 2–5: AI Package
+      # ------------------------------------
+
       - name: AI Package Typecheck
         run: pnpm --filter @eap/ai typecheck
 
       - name: AI Package Test
         run: pnpm --filter @eap/ai test
+
+      # ------------------------------------
+      # Day 4–5: Tool Registry
+      # ------------------------------------
 
       - name: Tool Registry Typecheck
         run: pnpm --filter @eap/tools typecheck
@@ -32,12 +61,29 @@ jobs:
       - name: Tool Registry Tests
         run: pnpm --filter @eap/tools test
 
+      # ------------------------------------
+      # Day 6: Persistence
+      # ------------------------------------
+
+      - name: Persistence Typecheck
+        run: pnpm --filter @eap/persistence typecheck
+
+      - name: Database Migration
+        run: pnpm --filter @eap/persistence db:migrate
+
+      - name: Persistence Integration Tests
+        run: pnpm --filter @eap/persistence test
+
+      # ------------------------------------
+      # Next.js Web
+      # ------------------------------------
+
       - name: Lint
         run: pnpm --filter @eap/web lint
 
       - name: Typecheck
         run: pnpm --filter @eap/web typecheck
-      
+
       - name: Web Streaming Tests
         run: pnpm --filter @eap/web test
 
