@@ -432,13 +432,11 @@ export class AgentRunner {
     } catch (error) {
       terminal = true;
 
-      const code = deadline.signal.aborted
-        ? deadline.remainingMs() <= 0
-          ? "DEADLINE_EXCEEDED"
-          : "CANCELLED"
-        : error instanceof RuntimeError
-          ? error.code
-          : "AGENT_ERROR";
+      // Timers and performance.now() need not agree at the boundary. Use the
+      // first actual abort cause, even if a different error surfaces afterwards.
+      const code = deadline.terminationReason?.code ?? (
+        error instanceof RuntimeError ? error.code : "AGENT_ERROR"
+      );
 
       yield {
         type: "error",

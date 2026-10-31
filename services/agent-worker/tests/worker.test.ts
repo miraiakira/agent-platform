@@ -22,6 +22,17 @@ async function until(check: () => Promise<boolean>) {
   }
 }
 
+class WaitingProvider extends MockProvider {
+  constructor(private readonly onEnter?: () => void) { super(); }
+  async *streamWithTools(options: StreamWithToolsOptions): AsyncIterable<ModelToolStreamEvent> {
+    void options;
+    this.onEnter?.();
+    // Simulate a provider which never responds to abort.
+    await new Promise<void>(() => {});
+    yield { type: "model-finish", finishReason: "stop" };
+  }
+}
+
 describe("real Agent worker integration", () => {
   let database: Awaited<ReturnType<typeof createTestDatabase>>;
   let queue: AgentJobQueue;
@@ -109,18 +120,62 @@ describe("real Agent worker integration", () => {
   });
 
   it("enforces the global AgentRunner deadline", async () => {
-    class WaitingProvider extends MockProvider {
-      async *streamWithTools(options: StreamWithToolsOptions): AsyncIterable<ModelToolStreamEvent> {
-        void options;
-        // Simulate a provider which never responds to abort.
-        await new Promise<void>(() => {});
-        yield { type: "model-finish", finishReason: "stop" };
-      }
-    }
     const run = await submit();
     start(new AgentExecutor({ store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(), maxDurationMs: 20 }));
     await until(async () => (await store.getRun(run.id))?.status === "failed");
     expect((await store.getRun(run.id))?.error).toMatchObject({ code: "DEADLINE_EXCEEDED" });
+  });
+
+  it("does not overwrite a completed deadline result with a later worker shutdown", async () => {
+    const run = await submit();
+    const real = new AgentExecutor({ store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(), maxDurationMs: 20 });
+    let code: string | undefined;
+    const worker = start({ async execute(job, signal) {
+      const result = await real.execute(job, signal);
+      code = result.error?.code;
+      worker.stop.abort();
+      return result;
+    } });
+    await worker.running;
+    expect(code).toBe("DEADLINE_EXCEEDED");
+    expect((await store.getRun(run.id))?.error).toMatchObject({ code: "DEADLINE_EXCEEDED" });
+  });
+
+  it("reports lease loss distinctly while fencing all final result writes", async () => {
+    const run = await submit();
+    const entered = deferred(); const returned = deferred();
+    const real = executor(new WaitingProvider(entered.resolve));
+    let code: string | undefined;
+    const worker = start({ async execute(job, signal) {
+      const result = await real.execute(job, signal);
+      code = result.error?.code;
+      returned.resolve();
+      return result;
+    } });
+    await entered.promise;
+    // Expire the actual DB lease before the next heartbeat; do not fake cancellation.
+    await database.pool.query("UPDATE agent_jobs SET lease_expires_at=now()-interval '1 second' WHERE run_id=$1", [run.id]);
+    await returned.promise;
+    worker.stop.abort(); await worker.running;
+    expect(code).toBe("LEASE_LOST");
+    expect((await store.getRun(run.id))?.output).toBeNull();
+    expect((await events.listAfter(run.id, "0", 500)).some((e) => e.event_type === "done")).toBe(false);
+  });
+
+  it("preserves heartbeat failure instead of converting it to user cancellation", async () => {
+    const run = await submit();
+    vi.spyOn(queue, "renewLease").mockRejectedValueOnce(new Error("database temporarily unavailable"));
+    const real = executor(new WaitingProvider());
+    let code: string | undefined;
+    const worker = start({ async execute(job, signal) {
+      const result = await real.execute(job, signal);
+      code = result.error?.code;
+      return result;
+    } });
+    await until(async () => (await store.getRun(run.id))?.status === "failed");
+    worker.stop.abort(); await worker.running;
+    expect(code).toBe("HEARTBEAT_FAILED");
+    expect((await store.getRun(run.id))?.error).toMatchObject({ code: "HEARTBEAT_FAILED" });
   });
 
   it("fences a worker that loses its lease before returning results", async () => {

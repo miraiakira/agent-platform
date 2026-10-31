@@ -93,11 +93,12 @@ export function createDeadline(
 ) {
   const controller = new AbortController();
   const started = performance.now();
-  let reason: "deadline" | "cancelled" | null = null;
-
   const abortFromParent = () => {
-    reason = "cancelled";
-    controller.abort(parent?.reason);
+    // AbortController preserves the first cause. Always carry a typed reason,
+    // including for ordinary browser/user aborts whose reason is a DOMException.
+    controller.abort(parent?.reason instanceof RuntimeError
+      ? parent.reason
+      : new RuntimeError("CANCELLED", "Agent cancelled"));
   };
 
   if (parent?.aborted) {
@@ -110,7 +111,6 @@ export function createDeadline(
 
   const timer = setTimeout(() => {
     if (!controller.signal.aborted) {
-      reason = "deadline";
       controller.abort(
         new RuntimeError(
           "DEADLINE_EXCEEDED",
@@ -123,6 +123,10 @@ export function createDeadline(
   return {
     signal: controller.signal,
 
+    get terminationReason(): RuntimeError | null {
+      return controller.signal.aborted ? controller.signal.reason as RuntimeError : null;
+    },
+
     remainingMs() {
       return Math.max(
         0,
@@ -133,17 +137,7 @@ export function createDeadline(
     throwIfAborted() {
       if (!controller.signal.aborted) return;
 
-      if (reason === "deadline") {
-        throw new RuntimeError(
-          "DEADLINE_EXCEEDED",
-          "Agent deadline exceeded",
-        );
-      }
-
-      throw new RuntimeError(
-        "CANCELLED",
-        "Agent cancelled",
-      );
+      throw controller.signal.reason;
     },
 
     dispose() {

@@ -1,3 +1,4 @@
+import { RuntimeError } from "@eap/ai";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentJobQueue, JobLifecycle, ClaimedJob } from "@eap/persistence";
 import type { JobExecutor, JobResult } from "./executor";
@@ -22,7 +23,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
 
   async function execute(job: ClaimedJob) {
     const controller = new AbortController();
-    const stop = () => controller.abort(new Error("WORKER_STOPPED"));
+    const stop = () => controller.abort(new RuntimeError("WORKER_STOPPED", "Worker stopped"));
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     // Serial heartbeat loop; always joined before finalization.
@@ -33,13 +34,23 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
           await delay(Math.max(10, lease * 1000 / 3), undefined, { signal: heartbeatStop.signal });
         } catch { break; }
         try {
-          if (!await queue.renewLease(job.id, job.lease_token, lease)) {
-            controller.abort(new Error("LEASE_LOST_OR_CANCELLED"));
+          const renewed = await queue.renewLease(job.id, job.lease_token, lease);
+          if (heartbeatStop.signal.aborted) break;
+          if (!renewed) {
+            const current = await queue.getJobByRunId(job.run_id);
+            if (heartbeatStop.signal.aborted) break;
+            const cancelled = current?.status === "running" &&
+              current.lease_token === job.lease_token && current.cancel_requested_at;
+            controller.abort(cancelled
+              ? new RuntimeError("CANCELLED", "Agent cancelled")
+              : new RuntimeError("LEASE_LOST", "Worker lease lost"));
             break;
           }
         } catch (error) {
           report(error);
-          controller.abort(error);
+          if (!heartbeatStop.signal.aborted) {
+            controller.abort(new RuntimeError("HEARTBEAT_FAILED", "Worker heartbeat failed"));
+          }
           break;
         }
       }
@@ -49,7 +60,10 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
       result = await executor.execute(job, controller.signal);
     } catch (error) {
       report(error);
-      result = { status: "failed", error: { code: "WORKER_ERROR", message: "Worker execution interrupted" } };
+      const reason = controller.signal.aborted ? controller.signal.reason : error;
+      result = { status: "failed", error: reason instanceof RuntimeError
+        ? { code: reason.code, message: reason.message }
+        : { code: "WORKER_ERROR", message: "Worker execution interrupted" } };
     } finally {
       heartbeatStop.abort();
       await heartbeat;
@@ -57,7 +71,14 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
     }
     // finalizeJob checks lease and cancellation under locks. Never infer user cancellation from generic abort.
     try {
-      if (signal.aborted) result = { ...result, status: "failed", error: { code: "WORKER_STOPPED", message: "Worker stopped" } };
+      // A late shutdown/heartbeat cannot replace a terminal cause already returned
+      // by AgentRunner (in particular DEADLINE_EXCEEDED).
+      if (!result.error && controller.signal.aborted) {
+        const reason = controller.signal.reason;
+        if (reason instanceof RuntimeError) {
+          result = { ...result, status: "failed", error: { code: reason.code, message: reason.message } };
+        }
+      }
       const saved = await lifecycle.finalizeJob({ ...result, jobId: job.id, leaseToken: job.lease_token });
       if (!saved) report(new Error(`Finalization fenced: ${job.id}`));
     } catch (error) { report(error); }
