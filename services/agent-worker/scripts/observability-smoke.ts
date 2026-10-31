@@ -54,7 +54,7 @@ async function main() {
       console.log(JSON.stringify({runId:run.id,collectorUnavailable:"Agent still completed",workerShutdown:"bounded",usageSnapshot:"passed"}));
       return;
     }
-    const grafana=process.env.GRAFANA_URL ?? "http://127.0.0.1:3000";
+    const grafana=process.env.GRAFANA_URL ?? "http://127.0.0.1:3300";
     async function get(path:string) { const response=await fetch(grafana+path);assert(response.ok);return response.json(); }
     stage = "tempo.trace";
     const requiredSpans=["agent.job.submit","agent.run","agent.model.request","agent.tool.execute","business.http"];

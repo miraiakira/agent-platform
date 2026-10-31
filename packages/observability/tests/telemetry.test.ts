@@ -4,7 +4,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { InMemoryMetricExporter, PeriodicExportingMetricReader, AggregationTemporality } from "@opentelemetry/sdk-metrics";
 import { initTelemetry, shutdownTelemetry, startSpan, injectTraceHeaders, extractTraceContext, inSpan, log, metric,
-  observeModelStream, estimateCost, loadPrices, observeOperation, withIdentity } from "../src";
+  observeModelStream, estimateCost, loadPrices, observeOperation, withIdentity, getTelemetryState } from "../src";
 
 afterEach(async () => { await shutdownTelemetry(); vi.unstubAllEnvs(); });
 function setup(sink = (_line:string) => {}) {
@@ -60,6 +60,69 @@ describe("observability contract", () => {
   expect(histogram.dataPoints[0].value).toMatchObject({ count: 1 });
   expect(data.find((m)=>m.descriptor.name==="agent_worker_active_jobs")?.dataPoints[0].value).toBe(0);
  });
+ it("records the last cumulative Usage only after normal stream exhaustion",async()=>{
+  vi.stubEnv("MODEL_PRICES_JSON",JSON.stringify([{provider:"mock",model:"mock-model",input:2,output:4,unit:"per_million_tokens",effectiveAt:"2020-01-01",version:"test-v1"}]));
+  const {reader,metrics}=setup();
+  const stream=observeModelStream(async function*(){
+    yield {type:"usage",usage:{inputTokens:10,outputTokens:5}};
+    yield {type:"usage",usage:{inputTokens:30,outputTokens:12}};
+  },{"agent.provider":"mock","agent.model":"mock-model"});
+  const tokens=()=>metrics.getMetrics().flatMap((r)=>r.scopeMetrics.flatMap((s)=>s.metrics)).find((m)=>m.descriptor.name==="agent_model_tokens_total");
+  await stream.next();await reader.forceFlush();expect(tokens()).toBeUndefined();
+  await stream.next();await reader.forceFlush();expect(tokens()).toBeUndefined();
+  expect((await stream.next()).done).toBe(true);
+  await reader.forceFlush();expect(tokens()?.dataPoints.map((p)=>p.value)).toEqual([30,12]);
+  const cost=metrics.getMetrics().flatMap((r)=>r.scopeMetrics.flatMap((s)=>s.metrics)).find((m)=>m.descriptor.name==="agent_model_estimated_cost_usd_total")!;
+  expect(cost.dataPoints).toHaveLength(1);expect(cost.dataPoints[0].value).toBeCloseTo(0.000108,12);
+ });
+ it("does not commit preliminary Usage when the source throws, and rethrows the exact error",async()=>{
+  const {reader,metrics,spans}=setup();const error=new Error("business stream failure");
+  const consume=async()=>{for await(const event of observeModelStream(async function*(){
+    yield {type:"usage",usage:{inputTokens:10,outputTokens:5}};throw error;
+  },{})) void event;};
+  await expect(consume()).rejects.toBe(error);
+  await reader.forceFlush();
+  expect(metrics.getMetrics().flatMap((r)=>r.scopeMetrics.flatMap((s)=>s.metrics)).some((m)=>m.descriptor.name==="agent_model_tokens_total")).toBe(false);
+  expect(spans.getFinishedSpans()[0].status.code).toBe(2);
+ });
+ it.each(["error-event","invalid-final","consumer-return"])("does not count unconfirmed Usage: %s",async(mode)=>{
+  const {reader,metrics}=setup();
+  const stream=observeModelStream(async function*(){
+    yield {type:"usage",usage:{inputTokens:10,outputTokens:5}};
+    if(mode==="error-event") yield {type:"error",code:"PROVIDER_ERROR"};
+    if(mode==="invalid-final") yield {type:"usage",usage:{inputTokens:-1,outputTokens:NaN}};
+  },{});
+  if(mode==="consumer-return"){await stream.next();await stream.return(undefined);}
+  else for await(const event of stream) void event;
+  await reader.forceFlush();
+  expect(metrics.getMetrics().flatMap((r)=>r.scopeMetrics.flatMap((s)=>s.metrics)).some((m)=>m.descriptor.name==="agent_model_tokens_total")).toBe(false);
+ });
+ it("records and preserves synchronous factory errors",async()=>{
+  const {spans}=setup();const error=new Error("provider factory failed");
+  const consume=async()=>{for await(const event of observeModelStream(()=>{throw error},{})) void event};
+  await expect(consume()).rejects.toBe(error);
+  expect(spans.getFinishedSpans()).toHaveLength(1);expect(spans.getFinishedSpans()[0].status.code).toBe(2);
+ });
+ it("ignores a telemetry classifier failure without changing business outcomes",async()=>{
+  setup();const classifier=()=>{throw new Error("telemetry classifier failed")};
+  expect(await observeOperation("tool",{},async()=>42,classifier)).toBe(42);
+  expect(await inSpan("business",{},async()=>42,undefined,classifier)).toBe(42);
+  const error=new Error("real business failure");
+  await expect(observeOperation("tool",{},async()=>{throw error})).rejects.toBe(error);
+  Object.defineProperty(error,"code",{get(){throw new Error("metadata access failed")}});
+  await expect(inSpan("business",{},async()=>{throw error})).rejects.toBe(error);
+  await expect(observeOperation("tool",{},async()=>{throw error})).rejects.toBe(error);
+ });
+ it("assigns explicit compatible units to counters, histograms and active work",async()=>{
+  const {reader,metrics}=setup();
+  metric("agent_runs_total",1);metric("agent_run_duration_seconds",2);
+  metric("agent_model_estimated_cost_usd_total",0.5);
+  metric("agent_active_runs",1);metric("agent_active_runs",-1);
+  metric("agent_worker_active_jobs",1);metric("agent_worker_active_jobs",-1);
+  await reader.forceFlush();
+  const descriptors=Object.fromEntries(metrics.getMetrics().flatMap((r)=>r.scopeMetrics.flatMap((s)=>s.metrics)).map((m)=>[m.descriptor.name,m.descriptor.unit]));
+  expect(descriptors).toEqual({agent_runs_total:"1",agent_run_duration_seconds:"s",agent_model_estimated_cost_usd_total:"USD",agent_active_runs:"1",agent_worker_active_jobs:"1"});
+ });
  it.each(["DEADLINE_EXCEEDED","CANCELLED","LEASE_LOST"])("sets error status without exporting exception content: %s",async(code)=>{
   const {spans}=setup();
   await expect(inSpan("agent.run",{},async()=>{throw Object.assign(new Error("secret payload"),{code})})).rejects.toThrow();
@@ -83,6 +146,9 @@ describe("observability contract", () => {
   startSpan("agent.run").end();metric("agent_runs_total",1);
   const started=Date.now(); await shutdownTelemetry(50);
   expect(Date.now()-started).toBeLessThan(1500);
+  // Wait for the bounded built-in exporters to actually retire before the next fixture.
+  await shutdownTelemetry(3000);
+  expect(getTelemetryState().cleanupPending).toBe(false);
  });
  it("keeps SDK disabled even when another framework registered a global exporter",async()=>{
   const spans = new InMemorySpanExporter();

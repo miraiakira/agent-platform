@@ -17,7 +17,7 @@ Grafana → provisioned Prometheus / Tempo / Loki + Agent Overview
 
 共享包使用独立的 TracerProvider、MeterProvider 和 AsyncLocalStorage Context，不覆盖 Next.js 自身的全局 OTel Provider。Next `instrumentation.ts` 仅在 Node Runtime 初始化；没有将 Node SDK 放入客户端或 Edge Bundle。手工 Span 覆盖 Agent API 与运行链路，不启用会自动抓取 headers、SQL 参数、URL query 的全量 HTTP/数据库自动采集。`agent.sse.subscribe` 覆盖订阅生命周期，浏览器断开仍不取消 Worker。
 
-SDK 使用 global symbol 保证热重载不重复初始化，导出在后台进行、队列有界。Collector 不可用时不重试业务操作；进程关闭最多等待 2 秒。Worker main 在释放数据库连接后关闭遥测，Smoke Test 用 SIGTERM 验证独立进程退出；强制 SIGKILL、进程崩溃或 Next.js 强制退出仍可能丢失未导出的遥测。
+SDK 使用 global symbol 共享生命周期与指标缓存，保证热重载不重复初始化，导出在后台进行、队列有界。Collector 不可用时不重试业务操作；关闭调用默认最多等待 2 秒，但等待超时不等于 SDK 已关闭，实际清理未完成前禁止重新初始化。Worker main 在释放数据库连接后关闭遥测，Smoke Test 用 SIGTERM 验证独立进程退出；强制 SIGKILL、进程崩溃或 Next.js 强制退出仍可能丢失未导出的遥测。
 
 ## 依赖与版本
 
@@ -34,9 +34,9 @@ Go 锁定 OTel Trace 1.38.0、Logs 0.14.0 及对应 OTLP HTTP 导出器。OTLP L
 | `OTEL_ENABLED` | 默认 false，设 true 启用 SDK；JSON stdout Logger 仍可用 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Node 默认 http://127.0.0.1:4318，Compose 内 Go 使用 http://otel-collector:4318 |
 | `MODEL_PRICES_JSON` | 有效日期/版本化价格数组；缺省仅显式知道 mock-model 免费，真实模型价格未知 |
-| `GRAFANA_ADMIN_PASSWORD` | 可选本地引导密码；UI 默认匿名 Viewer，登录表单与 Basic Auth 关闭 |
+| `GRAFANA_ADMIN_PASSWORD` | 基础 Compose 关闭匿名；认证部署需设置安全引导密码。只有显式本地覆盖文件会开启匿名 Viewer |
 | `TEST_DATABASE_URL` | 集成测试与 Smoke 使用独立测试 DB，用户须能 CREATE/DROP SCHEMA |
-| `GRAFANA_URL` | Smoke 查询入口，默认 http://127.0.0.1:3000 |
+| `GRAFANA_URL` | Smoke 查询入口，默认 http://127.0.0.1:3300 |
 | `OBSERVABILITY_FAULT_TEST` | 仅 Smoke 的故障验收模式，true 时验证业务与退出，不要求导出成功 |
 
 Node OTLP HTTP 使用 JSON 编码；Go 使用 protobuf，两者都由同一 Collector HTTP Receiver 接收。不要给 Node 设置 gRPC 协议；当前显式初始化不读取通用 OTEL_TRACES_EXPORTER、OTEL_*_HEADERS、每信号 endpoint 或自动 Resource Detector。默认不传播 baggage/tracestate，以减少敏感数据传播。
@@ -46,7 +46,7 @@ Node OTLP HTTP 使用 JSON 编码；Go 使用 protobuf，两者都由同一 Coll
 ```bash
 pnpm install
 # 启用观测 Profile，并使 Go API 启用 OTLP
-OTEL_ENABLED=true docker compose --profile observability up -d --build --wait
+OTEL_ENABLED=true docker compose -f compose.yaml -f compose.observability-local.yaml --profile observability up -d --build --wait
 
 export DATABASE_URL='postgresql://eap:eap_dev_password@localhost:5432/eap'
 pnpm --filter @eap/persistence db:migrate
@@ -60,7 +60,7 @@ LLM_PROVIDER=mock pnpm --filter @eap/agent-worker start
 ENABLE_ASYNC_AGENT_DEV=true pnpm --filter @eap/web dev
 ```
 
-Grafana：http://localhost:3000/d/agent-overview 。只开放本机 3000、4318；Prometheus、Tempo、Loki 的查询端口只在 Compose 网络内部，统一通过 Grafana Datasource Proxy/Explore 查询。默认匿名只读，不能公开部署；如需编辑 Dashboard，通过版本控制中的 JSON Provisioning 修改，不使用匿名 Admin。
+Grafana：http://localhost:3300/d/agent-overview 。只开放本机 3300、4318；Prometheus、Tempo、Loki 的查询端口只在 Compose 网络内部，统一通过 Grafana Datasource Proxy/Explore 查询。基础 Compose 默认关闭匿名；上述显式本地覆盖文件启用匿名只读，不能公开部署；如需编辑 Dashboard，通过版本控制中的 JSON Provisioning 修改，不使用匿名 Admin。
 
 现有 PostgreSQL 和 Business API 不属于 observability Profile，普通 `docker compose up` 不会拉起观测组件。启用 Profile 时显式 `OTEL_ENABLED=true` 才打开 Go 导出，普通开发无 Collector 也可继续运行。
 
@@ -77,7 +77,7 @@ Grafana：http://localhost:3000/d/agent-overview 。只开放本机 3000、4318�
 | `agent_worker_active_jobs` | 当前进程正在处理的 Job Gauge |
 | `agent_worker_blocked_jobs_total` | 过期扫描成功阻断或完成事务因未知工具结果阻断的数量 |
 | `agent_model_requests_total` / `agent_model_duration_seconds` | 每次模型流调用次数和时长，含决策与最终回答阶段 |
-| `agent_model_tokens_total` | 仅累计每次请求首个真实 Usage；direction=input/output，usage_source=reported |
+| `agent_model_tokens_total` | 正常耗尽模型流后，只累计最后一个有效的请求级累计 Usage；direction=input/output，usage_source=reported |
 | `agent_model_estimated_cost_usd_total` | 基于已报告 Usage 和有效已知价格的估算成本；未知价格不产生伪造 0 点 |
 | `agent_tool_executions_total` / `agent_tool_duration_seconds` | 每个逻辑工具调用及策略内重试的总耗时；不因观测重新调用工具 |
 
@@ -263,3 +263,62 @@ Agent Overview 的主要概览现采用 Stat 面板，显示选定时间内出�
 `pnpm --filter @eap/agent-worker start` 和 `dev` 会自动读取 `services/agent-worker/.env.local`（Node 24），无需手写 `pnpm exec tsx --env-file`。文件不存在时继续使用终端环境，保留 CI 与容器的注入方式。可参考同目录 `.env.example` 创建本地文件；不要提交真实密钥。
 
 终端中已 export 的同名变量优先于文件。例如以前执行过 `export LLM_PROVIDER=mock`，需先 `unset LLM_PROVIDER` 才会使用文件中的 deepseek。环境文件修改后重启 Worker。Web 仍使用自己的 `apps/web/.env.local`。
+
+## Day 8 小范围加固：风险核对与行为约定
+
+本次没有改动 AgentRunner、模型预算、Job 状态机、Lease、SQL 迁移或工具重试语义。
+
+| 风险 | 核对结果 | 最小修复 |
+| --- | --- | --- |
+| 初始化失败仍显示成功 | 存在，旧代码提前设置 initialized，逐个发布 provider 并吞掉构造错误 | 显式状态；局部构造全部成功才发布；逐级记录资源所有权，失败回滚 |
+| 关闭超时后创建第二套 SDK | 存在，旧代码把调用方等待超时当作 SDK 真正结束 | 关闭时立即禁用采集，但一直保留实际 cleanup Promise；每个调用方分别有界等待 |
+| 热重载后残留旧指标缓存 | 存在，SDK 全局共享而缓存只属于模块 | 缓存也与 SDK 一起全局共享、退休时失效 |
+| Usage 过早入账/重复计数 | 存在，旧观测层收到第一条 Usage 就记录，之后失败也无法撤销 | 缓冲累计快照，仅流正常耗尽且无错误事件时记录最后一个有效值 |
+| 单位不一致 | UpDownCounter 未显式设置 unit；其余已正确 | 显式设置 1；Counter 保持 1/USD，Histogram 保持 s，不改名称 |
+| 匿名访问环境边界 | host 已绑定 127.0.0.1，但只靠 profile 且默认匿名为 true | 基础 Compose 关闭匿名；显式 compose.observability-local.yaml 才启用 Viewer |
+
+### 初始化与关闭
+
+`initTelemetry()` 返回状态快照，`getTelemetryState()` 可随时查询：
+
+- phase：idle / initializing / disabled / ready / failed / shutting-down。
+- cleanupPending：旧 SDK 的真实清理是否仍未结束。
+- initializationError：INITIALIZATION_FAILED、CLEANUP_FAILED 或 RESTART_REQUIRED；不暴露原始配置/错误内容。
+
+ready 表示 SDK 组件全部构造并发布，不代表 Collector 可达。初始化构造失败后，业务使用 No-op 采集，原始业务异常仍原样抛出。成功清理后才允许修正配置并重试；传入的 exporter/reader 所有权交给 SDK，不要跨 SDK 重用已经绑定或关闭的实例。
+
+`shutdownTelemetry(timeoutMs)` 只限制调用方的等待，不能强制杀死第三方 SDK。多个关闭调用共享一次真实清理，SDK 未结束前 init 不会创建新实例。实际清理成功后可以重新初始化；如果清理 reject，不能证明所有内部资源都已释放，因此保持 failed/CLEANUP_FAILED，业务继续执行，但遥测需要重启进程恢复。若 SDK 永远不结束，则一直禁止重建，不能以重复创建 SDK 来“恢复”。
+
+从旧布尔状态版本热重载到这次新实现时，也不能证明旧版本的超时清理是否完成，因此使用 RESTART_REQUIRED 安全降级。升级后请完整重启 Web 和 Worker 一次。标准 SDK 已配置有限的网络/导出超时；任意第三方 SDK 若持有不响应关闭的系统句柄，最终进程强制退出仍由进程管理器负责。
+
+### 模型 Usage 协议
+
+已核对源码：DeepSeek 启用 include_usage，正常协议是末尾单个请求累计快照，适配器会转发非空 Usage；MockProvider 的决策流只发一个累计快照，final 阶段仍不发 Usage，因此原来的 partial 语义不变。它们不把每个 Token 当 Usage 增量。
+
+观测层对异常多 Usage 做防御：不相加、不先记录第一条；暂存最后一个有效累计值，正常耗尽后一次记录 Token 和对应成本。后续非法值会使候选作废。错误、取消、提前停止消费、错误事件都不会把中间快照当作最终值入账。Metrics 因此可能低于真实计费量，不能当作账单。
+
+AgentRunner 原有的重复 Usage 拒绝规则保持不变。观测层的防御并不表示业务协议开始接受重复 Usage，也不会改变已有 Usage 持久化或重新执行工具。源迭代/工厂抛出的业务异常原样传递；只有观测元数据提取、分类回调和 SDK 操作失败被隔离。
+
+### 本地匿名访问
+
+基础配置：`docker compose --profile observability up -d grafana` 不启用匿名。仅受控本机开发可显式使用：
+
+```bash
+docker compose -f compose.yaml -f compose.observability-local.yaml --profile observability up -d grafana
+```
+
+保留宿主机 127.0.0.1:3300 绑定，覆盖文件只启用 Viewer，禁止匿名 Admin。这不是自动检测生产环境的机制；不要将本地覆盖文件用于服务器，不要加公开反向代理、Ingress、端口转发或 Docker API 暴露。其他同机用户/同 Docker 网络容器也可能访问，本地绑定不等于用户认证。基础配置本身也不是生产部署模板，生产仍需强密码、认证、TLS 与访问控制。
+
+手动 Observability Smoke CI 显式使用本地覆盖文件和 3300 查询入口，普通 CI 不需要运行这些服务。Collector 的 add_metric_suffixes=false、所有指标名及 Dashboard PromQL 保持兼容。
+
+### 本次加固验证结果
+
+本机执行结果（2026-11-01）：
+
+- `pnpm --filter @eap/observability test`：27 项通过，覆盖初始化回滚、重复初始化、并发关闭、超时后禁止重建、关闭失败、热重载、多 Usage、业务异常与 Collector 不可用。
+- `pnpm --filter @eap/agent-worker test`：连接真实测试 PostgreSQL，14 项集成测试通过。
+- `pnpm check`：通过；148 项 TypeScript 测试、Go 测试、类型检查与构建成功。Web 原有 see.test.ts 的 unused-vars warning 仍存在，无 lint error。
+- 正常 `pnpm test:observability`：Trace（含 Go）、Metrics、Logs、Dashboard provisioning、Worker shutdown、Usage snapshot 全部通过。
+- Collector 指向不可用端口的 fault smoke：Agent 完成、Worker 有界关闭、Usage snapshot 通过。
+
+Smoke 使用 MockProvider，没有调用真实 DeepSeek，也没有验证供应商账单。尚未触发远端 GitHub Actions；本地检查通过不代表远端 CI 已执行。SDK ready 不保证网络可达，任意永久挂起的第三方清理仍需进程重启；失败或未耗尽流的 Metrics 不代表供应商实际计费量。
