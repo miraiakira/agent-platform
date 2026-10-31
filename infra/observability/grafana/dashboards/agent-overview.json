@@ -1,0 +1,583 @@
+{
+  "uid": "agent-overview",
+  "title": "Agent Overview",
+  "schemaVersion": 40,
+  "version": 2,
+  "refresh": "5s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Observed runs",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(last_over_time(agent_runs_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Observed success ratio",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(last_over_time(agent_runs_total{status=\"completed\"}[$__range])) or (0 * sum(last_over_time(agent_runs_total[$__range])))) / sum(last_over_time(agent_runs_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Observed failure ratio",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(last_over_time(agent_runs_total{status!=\"completed\"}[$__range])) or (0 * sum(last_over_time(agent_runs_total[$__range])))) / sum(last_over_time(agent_runs_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Observed Run P50/P95/P99",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (last_over_time(agent_run_duration_seconds_bucket[$__range])))",
+          "legendFormat": "P50",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (last_over_time(agent_run_duration_seconds_bucket[$__range])))",
+          "legendFormat": "P95",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (last_over_time(agent_run_duration_seconds_bucket[$__range])))",
+          "legendFormat": "P99",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Quantile of the latest cumulative histogram buckets per process sampled in the selected range. Covers those process lifetimes; not an interval-rate quantile.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Observed Queue wait P95",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (last_over_time(agent_queue_wait_seconds_bucket[$__range])))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Quantile of the latest cumulative histogram buckets per process sampled in the selected range. Covers those process lifetimes; not an interval-rate quantile.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Worker active jobs",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(agent_worker_active_jobs)",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "description": "Recent rate or sampled active work. Zero is normal when no jobs are running; no samples means telemetry was not received in this period."
+    },
+    {
+      "id": 7,
+      "title": "Observed lease renewal failures",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (last_over_time(agent_worker_lease_renewal_failures_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Observed reported model tokens",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider,model,direction) (last_over_time(agent_model_tokens_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Observed estimated model cost USD",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider,model) (last_over_time(agent_model_estimated_cost_usd_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "Unknown price or no reported usage"
+        },
+        "overrides": []
+      },
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Observed tool calls",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tool,status) (last_over_time(agent_tool_executions_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Observed Tool P95 duration",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,tool) (last_over_time(agent_tool_duration_seconds_bucket[$__range])))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Quantile of the latest cumulative histogram buckets per process sampled in the selected range. Covers those process lifetimes; not an interval-rate quantile.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "graphMode": "none",
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Recent errors",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(agent_runs_total{status!=\"completed\"}[5m]))",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "description": "Recent rate or sampled active work. Zero is normal when no jobs are running; no samples means telemetry was not received in this period."
+    },
+    {
+      "id": 13,
+      "title": "Observed blocked jobs",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(last_over_time(agent_worker_blocked_jobs_total[$__range]))",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "description": "Sum of the latest sampled cumulative counter per process observed in the selected range. Includes counts since each process started, not an exact increase within the range. Missing data is not assumed to be zero.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No reported samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "Active Agent runs",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(agent_active_runs)",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "description": "Recent rate or sampled active work. Zero is normal when no jobs are running; no samples means telemetry was not received in this period."
+    }
+  ],
+  "links": [
+    {
+      "title": "Traces",
+      "url": "/explore?left={\"datasource\":\"tempo\"}"
+    },
+    {
+      "title": "Logs",
+      "url": "/explore?left={\"datasource\":\"loki\"}"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
+import { createBusinessTools } from "@eap/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createModelProvider, DeepSeekProvider } from "../src";
+import { createModelProvider, DeepSeekProvider, AgentRunner } from "../src";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -288,3 +289,58 @@ describe("DeepSeekProvider", () => {
   });
 });
 
+
+
+function chatStream(deltas: unknown[], finishReason = "tool_calls") {
+  const frames: unknown[] = deltas.map((delta) => ({ id: "test-stream", model: "test-model", choices: [{ index: 0, delta, finish_reason: null }] }));
+  frames.push({ id: "test-stream", model: "test-model", choices: [{ index: 0, delta: {}, finish_reason: finishReason }] });
+  return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } });
+}
+
+describe("DeepSeek streamed tool argument regression", () => {
+  it.each([undefined, null])("preserves continuation arguments when type is %s", async (type) => {
+    const fragments = ['{"date":', '"2026-11-01",', '"limit":3}'];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(chatStream([
+      { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "get_high_risk_transactions", arguments: "" } }] },
+      ...fragments.map((arguments_) => ({ tool_calls: [{ index: 0, type, function: { arguments: arguments_ } }] })),
+    ])));
+    const events = [];
+    for await (const event of new DeepSeekProvider(config).streamWithTools({ messages, tools: [] })) events.push(event);
+    const calls = events.filter((event) => event.type === "tool-call-delta");
+    expect(calls.map((call) => call.arguments).join("")).toBe(fragments.join(""));
+    expect(JSON.parse(calls.map((call) => call.arguments).join(""))).toEqual({ date: "2026-11-01", limit: 3 });
+  });
+
+  it("rejects unsupported explicit tool types", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(chatStream([{ tool_calls: [{ index: 0, type: "custom" }] }])));
+    const consume = async () => {
+      for await (const event of new DeepSeekProvider(config).streamWithTools({ messages, tools: [] })) void event;
+    };
+    await expect(consume()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("runs the real provider parser and runner through a fragmented tool call to a final answer", async () => {
+    const modelFetch = vi.fn()
+      .mockResolvedValueOnce(chatStream([
+        { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "get_high_risk_transactions", arguments: "" } }] },
+        { tool_calls: [{ index: 0, function: { arguments: '{"date":"2026-11-01",' } }] },
+        { tool_calls: [{ index: 0, id: "", function: { name: "", arguments: '"limit":3}' } }] },
+      ]))
+      .mockResolvedValueOnce(chatStream([{ content: "Ready to answer" }], "stop"))
+      .mockResolvedValueOnce(chatStream([{ content: "No high-risk transactions found" }], "stop"));
+    vi.stubGlobal("fetch", modelFetch);
+    const businessFetch = vi.fn(async () => Response.json({ items: [], total: 0 }));
+    const tools = createBusinessTools({ baseURL: "http://business.test", fetchImpl: businessFetch });
+    const runner = new AgentRunner({ provider: new DeepSeekProvider(config), tools, budget: { maxModelCalls: 5 } });
+    const events = [];
+    for await (const event of runner.run({ messages })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: "done" });
+    expect(events).toContainEqual({ type: "text-delta", text: "No high-risk transactions found" });
+    expect(events).toContainEqual({ type: "tool-result", toolCallId: "call-1", toolName: "get_high_risk_transactions", success: true, attempts: 1 });
+    expect(businessFetch).toHaveBeenCalledOnce();
+    expect(modelFetch).toHaveBeenCalledTimes(3);
+    const secondBody = JSON.parse(modelFetch.mock.calls[1][1].body);
+    expect(secondBody.messages).toContainEqual({ role: "tool", tool_call_id: "call-1", content: '{"items":[],"total":0}' });
+  });
+});

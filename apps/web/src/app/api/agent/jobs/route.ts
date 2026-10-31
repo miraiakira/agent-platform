@@ -1,3 +1,4 @@
+import { inSpan, extractTraceContext, log, errorCode } from "@eap/observability";
 import { z } from "zod";
 import { JobRequestError } from "@eap/persistence";
 import { jobLifecycle } from "@/lib/persistence";
@@ -19,13 +20,13 @@ export async function POST(request: Request) {
   const parsed = schema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid request" }, { status: 400 });
   try {
-    const run = await jobLifecycle.submit({ ...parsed.data, requestKey });
+    const run = await inSpan("agent.job.submit", {}, () => jobLifecycle.submit({ ...parsed.data, requestKey }), extractTraceContext({ traceparent: request.headers.get("traceparent") }));
     return Response.json({ runId: run.id, conversationId: run.conversation_id, status: run.status,
       eventsUrl: `/api/agent/runs/${run.id}/events` }, { status: 202 });
   } catch (error) {
     if (error instanceof JobRequestError) return Response.json({ error: error.message }, { status: error.status });
     if (error && typeof error === "object" && "code" in error && error.code === "23505") return Response.json({ error: "Conversation already has an active run" }, { status: 409 });
-    console.error("Failed to enqueue agent", error);
+    log("error", "job.submit_failed", { error_code: errorCode(error) });
     return Response.json({ error: "Database unavailable" }, { status: 503 });
   }
 }

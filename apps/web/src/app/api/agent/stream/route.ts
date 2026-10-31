@@ -1,3 +1,4 @@
+import { log, errorCode } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -160,7 +161,7 @@ export async function POST(request: Request) {
       conversationId = conversation.id;
     }
   } catch (error) {
-    console.error("Conversation initialization failed", error);
+    log("error", "agent.execution_failed", { error_code: errorCode(error) });
 
     return Response.json(
       { error: "Database unavailable" },
@@ -189,6 +190,7 @@ export async function POST(request: Request) {
 
   const runner = new AgentRunner({
     provider,
+    model: process.env.LLM_MODEL,
     tools,
     budget: {
       maxModelCalls: 5,
@@ -202,10 +204,7 @@ export async function POST(request: Request) {
     onTrace(trace) {
       latestTrace = trace;
 
-      console.info(
-        "[agent-trace]",
-        JSON.stringify(trace),
-      );
+      log("info", "agent.trace_ready");
     },
   });
 
@@ -267,7 +266,7 @@ export async function POST(request: Request) {
       });
     }
   } catch (error) {
-    console.error("Run initialization failed", error);
+    log("error", "agent.execution_failed", { error_code: errorCode(error) });
 
     request.signal.removeEventListener("abort", abort);
 
@@ -413,7 +412,7 @@ export async function POST(request: Request) {
         // 数据库持久化成功后才发送 done
         send({ type: "done" });
       } catch (error) {
-        console.error("Agent execution failed", error);
+        log("error", "agent.execution_failed", { error_code: errorCode(error) });
 
         try {
           if (latestTrace) {
@@ -448,10 +447,7 @@ export async function POST(request: Request) {
             });
           }
         } catch (persistError) {
-          console.error(
-            "Unable to persist failed run",
-            persistError,
-          );
+          log("error", "agent.execution_failed", { error_code: errorCode(persistError) });
         }
 
         if (!abortController.signal.aborted) {

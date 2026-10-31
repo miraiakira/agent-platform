@@ -32,6 +32,7 @@ export type ChatStreamEvent =
     }
   | {
       type: "trace";
+      cost?: { usd: number | null; coverage: "reported" | "partial" | "unavailable" };
       traceId: string;
       durationMs: number;
       modelCalls: number;

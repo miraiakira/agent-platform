@@ -28,6 +28,16 @@ const transitions: Record<RunStatus, RunStatus[]> = {
 export class PersistenceStore {
   constructor(private readonly db: Pool) {}
 
+  async usageByModel() {
+    const result = await this.db.query(`SELECT provider,model,count(*)::int AS runs,
+      sum(input_tokens)::text AS input_tokens,sum(output_tokens)::text AS output_tokens,sum(total_tokens)::text AS total_tokens,
+      count(*) FILTER (WHERE estimated_cost_usd IS NULL)::int AS unknown_cost_runs,
+      count(*) FILTER (WHERE usage_source <> 'reported')::int AS incomplete_usage_runs,
+      CASE WHEN count(*) FILTER (WHERE estimated_cost_usd IS NULL)=0 THEN sum(estimated_cost_usd)::text ELSE NULL END AS reported_usage_estimated_cost_usd
+      FROM agent_usage GROUP BY provider,model ORDER BY provider,model`);
+    return result.rows;
+  }
+
   async createConversation(
     title = "New conversation",
   ): Promise<Conversation> {

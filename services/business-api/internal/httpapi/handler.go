@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"github.com/miraiakira/businese-api/internal/telemetry"
+	"go.opentelemetry.io/otel"
 	"net/http"
 )
 
@@ -20,7 +22,7 @@ func NewHandler() http.Handler {
 		highRiskTransactionsHandler,
 	)
 
-	return mux
+	return telemetry.HTTP(mux, otel.Tracer("eap-business-api"))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

@@ -1,3 +1,4 @@
+import { injectTraceHeaders, metric } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type { AgentRunRecord, SpanInput } from "./types";
@@ -17,6 +18,7 @@ export interface JobFinalization {
   status: "completed" | "failed" | "cancelled";
   answer?: string;
   error?: { code: string; message: string };
+  observability?: { provider: string; model: string; otelTraceId?: string; inputTokens: number; outputTokens: number; usageSource: "reported"|"partial"|"unavailable"; cost: { usd: number|null; price: unknown } };
   trace?: {
     traceId: string; durationMs?: number; modelCalls: number; toolCalls: number;
     inputTokens: number; outputTokens: number; spans: SpanInput[];
@@ -62,7 +64,7 @@ export class JobLifecycle {
         [randomUUID(), conversationId, randomUUID(), JSON.stringify(messages), input.requestKey, payload],
       );
       const run = result.rows[0]!;
-      await client.query("INSERT INTO agent_jobs(id, run_id) VALUES ($1,$2)", [randomUUID(), run.id]);
+      await client.query("INSERT INTO agent_jobs(id, run_id, trace_context) VALUES ($1,$2,$3::jsonb)", [randomUUID(), run.id, JSON.stringify(injectTraceHeaders())]);
       const user = [...input.messages].reverse().find((m) => m.role === "user");
       if (user) await client.query(
         "INSERT INTO messages(id, conversation_id, run_id, role, content) VALUES ($1,$2,$3,'user',$4::jsonb)",
@@ -73,7 +75,8 @@ export class JobLifecycle {
   }
 
   async finalizeJob(input: JobFinalization): Promise<boolean> {
-    return transaction(this.db, async (client) => {
+    let blockedRun = false;
+    const finalized = await transaction(this.db, async (client) => {
       const job = await lockLease(client, input.jobId, input.leaseToken);
       if (!job) return false;
       const status = job.cancel_requested_at ? "cancelled" : input.status;
@@ -84,6 +87,7 @@ export class JobLifecycle {
          WHERE run_id = $1 AND status IN ('reserved','running') RETURNING id`, [job.run_id]);
       const unresolved = await client.query("SELECT 1 FROM tool_executions WHERE run_id=$1 AND status='unknown'", [job.run_id]);
       const blocked = Boolean(unknown.rowCount || unresolved.rowCount || input.error?.code === "TOOL_REPLAY_BLOCKED" || input.error?.code === "EXECUTION_OUTCOME_UNKNOWN");
+      blockedRun = blocked;
       const finalStatus = blocked ? "interrupted" : status;
       const finalError = blocked ? { code: "EXECUTION_OUTCOME_UNKNOWN", message: "Tool outcome requires reconciliation; automatic replay disabled" } : error;
       await client.query(
@@ -93,6 +97,13 @@ export class JobLifecycle {
         [job.run_id, finalStatus, JSON.stringify({ answer: input.answer ?? "" }), JSON.stringify(finalError ?? null),
           trace?.traceId ?? null, trace?.modelCalls ?? 0, trace?.toolCalls ?? 0, trace?.inputTokens ?? 0, trace?.outputTokens ?? 0],
       );
+      if (input.observability) {
+        const o = input.observability;
+        await client.query("UPDATE agent_runs SET observability=$2::jsonb WHERE id=$1", [job.run_id, JSON.stringify(o)]);
+        await client.query(`INSERT INTO agent_usage(run_id,provider,model,input_tokens,output_tokens,usage_source,estimated_cost_usd,price)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          [job.run_id,o.provider,o.model,o.inputTokens,o.outputTokens,o.usageSource,o.cost.usd,JSON.stringify(o.cost.price)]);
+      }
       for (const [index, span] of (trace?.spans ?? []).entries()) await client.query(
         `INSERT INTO trace_spans(id,run_id,span_index,name,kind,status,duration_ms,data)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
@@ -105,7 +116,9 @@ export class JobLifecycle {
       );
       await client.query("UPDATE conversations SET updated_at=now() WHERE id=(SELECT conversation_id FROM agent_runs WHERE id=$1)", [job.run_id]);
       if (trace) await insertEvent(client, job.run_id, "trace", {
-        type: "trace", traceId: trace.traceId, durationMs: trace.durationMs ?? 0, modelCalls: trace.modelCalls, toolCalls: trace.toolCalls,
+        type: "trace", traceId: trace.traceId,
+        cost: input.observability ? { usd: input.observability.cost.usd, coverage: input.observability.usageSource } : undefined,
+        durationMs: trace.durationMs ?? 0, modelCalls: trace.modelCalls, toolCalls: trace.toolCalls,
         usage: { inputTokens: trace.inputTokens, outputTokens: trace.outputTokens, totalTokens: trace.inputTokens + trace.outputTokens },
       });
       await insertEvent(client, job.run_id, finalStatus === "completed" ? "done" : "error",
@@ -116,6 +129,8 @@ export class JobLifecycle {
       );
       return true;
     });
+    if (finalized && blockedRun) metric("agent_worker_blocked_jobs_total",1);
+    return finalized;
   }
 
   // Tool intent is committed before invoking any external effect. Never replay an existing intent.

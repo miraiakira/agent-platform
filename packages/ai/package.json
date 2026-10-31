@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@eap/tools": "workspace:*",
-    "openai": "^7.45.0"
+    "openai": "^7.45.0",
+    "@eap/observability": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

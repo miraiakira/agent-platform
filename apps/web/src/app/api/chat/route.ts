@@ -1,3 +1,4 @@
+import { log, errorCode } from "@eap/observability";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -131,7 +132,7 @@ export async function POST(request: Request) {
       );
     }
 
-    console.error("Chat request failed", error);
+    log("error", "chat.request_failed", { error_code: errorCode(error) });
 
     return NextResponse.json(
       {

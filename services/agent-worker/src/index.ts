@@ -1,3 +1,4 @@
+import { initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import { createModelProvider } from "@eap/ai";
 import { createBusinessTools } from "@eap/tools";
@@ -12,6 +13,7 @@ function positive(name: string, fallback: number) {
 }
 
 async function main() {
+  initTelemetry({ service: "eap-agent-worker" });
   const providerName = process.env.LLM_PROVIDER ?? "mock";
   if (providerName !== "mock" && providerName !== "deepseek") throw new Error("Unsupported worker LLM_PROVIDER");
   const provider = createModelProvider({ provider: providerName, apiKey: process.env.LLM_API_KEY, model: process.env.LLM_MODEL, baseURL: process.env.LLM_BASE_URL || undefined });
@@ -24,7 +26,7 @@ async function main() {
     const lifecycle = new JobLifecycle(pool);
     await runWorker({
       queue: new AgentJobQueue(pool), lifecycle,
-      executor: new AgentExecutor({ store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, provider,
+      executor: new AgentExecutor({ store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, provider, model: process.env.LLM_MODEL,
         tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY }),
         maxDurationMs: positive("WORKER_MAX_DURATION_MS", 60_000),
       }),
@@ -37,8 +39,8 @@ async function main() {
   } finally {
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGINT", stop);
-    await pool.end();
+    try { await pool.end(); } finally { await shutdownTelemetry(); }
   }
 }
 
-main().catch((error) => { console.error("[worker] fatal", error); process.exitCode = 1; });
+main().catch((error) => { log("error", "worker.fatal", { error_code: errorCode(error) }); void shutdownTelemetry(); process.exitCode = 1; });

@@ -49,6 +49,7 @@ export interface ExecutionTrace {
   modelCalls: number;
   toolCalls: number;
   usage: AgentUsage;
+  usageReports?: number;
   spans: TraceSpan[];
 }
 
@@ -59,6 +60,7 @@ export function createTrace(): ExecutionTrace {
     durationMs: 0,
     modelCalls: 0,
     toolCalls: 0,
+    usageReports: 0,
     usage: {
       inputTokens: 0,
       outputTokens: 0,

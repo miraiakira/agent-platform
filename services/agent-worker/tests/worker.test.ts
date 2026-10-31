@@ -1,3 +1,5 @@
+import { initTelemetry, shutdownTelemetry, inSpan } from "@eap/observability";
+import { InMemorySpanExporter, InMemoryMetricExporter, PeriodicExportingMetricReader, AggregationTemporality } from "@eap/observability/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockProvider, type ModelToolStreamEvent, type StreamWithToolsOptions } from "@eap/ai";
 import { z } from "zod";
@@ -52,6 +54,7 @@ describe("real Agent worker integration", () => {
     stops.splice(0).forEach((stop) => stop.abort());
     await Promise.all(workers.splice(0));
     await database?.close();
+    await shutdownTelemetry();
   });
   const submit = () => lifecycle.submit({ requestKey: crypto.randomUUID(), messages: [{ role: "user", content: "查询高风险交易" }] });
   function executor(provider = new MockProvider(), tools = new ToolRegistry()) {
@@ -86,6 +89,41 @@ describe("real Agent worker integration", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     // Read/reconnect operations cannot invoke the executor again.
     await events.listAfter(run.id, all[2]!.id, 500);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("persists async trace context and one audited usage snapshot without double-counting tokens", async () => {
+    const spans = new InMemorySpanExporter();
+    const metrics = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+    const reader = new PeriodicExportingMetricReader({ exporter: metrics, exportIntervalMillis: 60_000 });
+    initTelemetry({ service: "worker-test", enabled: true, spanExporter: spans, metricReader: reader, sink: () => {} });
+    const run = await inSpan("agent.job.submit", {}, submit);
+    const queued = (await queue.getJobByRunId(run.id))!;
+    expect(queued.trace_context?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => Response.json({ items: [], total: 0 }));
+    const worker = start(executor(new MockProvider(), createBusinessTools({ baseURL: "http://business.test", fetchImpl })));
+    await until(async () => (await store.getRun(run.id))?.status === "completed");
+    worker.stop.abort(); await worker.running;
+    const finished = spans.getFinishedSpans();
+    const submitSpan = finished.find((span) => span.name === "agent.job.submit")!;
+    const execution = finished.find((span) => span.name === "agent.job.execute")!;
+    expect(execution.parentSpanContext?.spanId).toBe(submitSpan.spanContext().spanId);
+    expect(execution.spanContext().traceId).toBe(submitSpan.spanContext().traceId);
+    expect(finished.filter((span) => span.name === "agent.model.request")).toHaveLength(3);
+    expect(finished.filter((span) => span.name === "agent.tool.execute")).toHaveLength(1);
+    const headers = fetchImpl.mock.calls[0][1]?.headers as Record<string,string>;
+    const toolSpan = finished.find((span) => span.name === "agent.tool.execute")!;
+    expect(headers.traceparent).toBe(`00-${toolSpan.spanContext().traceId}-${toolSpan.spanContext().spanId}-01`);
+    expect(JSON.stringify(finished.map((span) => span.attributes))).not.toContain("查询高风险交易");
+    const snapshot = (await database.pool.query("SELECT * FROM agent_usage WHERE run_id=$1", [run.id])).rows[0];
+    expect(snapshot).toMatchObject({ input_tokens: "50", output_tokens: "30", total_tokens: "80", usage_source: "partial" });
+    expect(Number(snapshot.estimated_cost_usd)).toBe(0);
+    expect(await lifecycle.finalizeJob({ jobId: queued.id, leaseToken: queued.lease_token!, status: "completed" })).toBe(false);
+    expect((await database.pool.query("SELECT * FROM agent_usage WHERE run_id=$1", [run.id])).rowCount).toBe(1);
+    await reader.forceFlush();
+    const values = metrics.getMetrics().flatMap((r) => r.scopeMetrics.flatMap((s) => s.metrics));
+    const tokens = values.find((m) => m.descriptor.name === "agent_model_tokens_total")!;
+    expect(tokens.dataPoints.reduce((total, point) => total + Number(point.value), 0)).toBe(80);
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 

@@ -45,6 +45,9 @@ jobs:
       # Day 2–5: AI Package
       # ------------------------------------
 
+      - name: Observability Typecheck and Tests
+        run: pnpm --filter @eap/observability typecheck && pnpm --filter @eap/observability test
+
       - name: AI Package Typecheck
         run: pnpm --filter @eap/ai typecheck
 

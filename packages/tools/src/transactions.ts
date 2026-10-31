@@ -1,3 +1,4 @@
+import { injectTraceHeaders } from "@eap/observability";
 import { z } from "zod";
 import {
   ToolError,
@@ -68,12 +69,7 @@ export function createBusinessTools(config: {
 
       try {
         const response = await fetchImpl(url, {
-          headers: config.apiKey
-            ? {
-                Authorization:
-                  `Bearer ${config.apiKey}`,
-              }
-            : undefined,
+          headers: { ...injectTraceHeaders(), ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
           signal: context.signal,
         });
 

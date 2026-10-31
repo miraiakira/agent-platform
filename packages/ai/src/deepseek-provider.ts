@@ -507,18 +507,17 @@ export class DeepSeekProvider implements ModelProvider {
         }
 
         for (const call of choice?.delta.tool_calls ?? []) {
+          // Only the first delta is required to carry the type/id/name.
+          // Argument-only continuation chunks must not be discarded.
+          if (call.type && call.type !== "function") {
+            throw new AIError("INVALID_RESPONSE", "Unsupported streamed tool call type", 502);
+          }
           yield {
             type: "tool-call-delta",
             index: call.index,
-            id: call.id,
-            name:
-              call.type === "function"
-                ? call.function?.name
-                : undefined,
-            arguments:
-              call.type === "function"
-                ? call.function?.arguments
-                : undefined,
+            id: call.id || undefined,
+            name: call.function?.name || undefined,
+            arguments: call.function?.arguments,
           };
         }
 

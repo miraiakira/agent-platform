@@ -12,7 +12,8 @@
     "db:migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "@eap/observability": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

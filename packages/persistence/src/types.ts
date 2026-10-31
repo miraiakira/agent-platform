@@ -41,6 +41,7 @@ export interface AgentRunRecord {
   conversation_id: string;
   trace_id: string;
   status: RunStatus;
+  observability?: JsonValue | null;
   input: JsonValue;
   output: JsonValue | null;
   error: JsonValue | null;

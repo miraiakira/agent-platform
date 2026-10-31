@@ -1,3 +1,4 @@
+import { injectTraceHeaders } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { JobLifecycle } from "./job-lifecycle";
@@ -12,6 +13,7 @@ export type JobStatus =
   | "blocked";
 
 export interface AgentJob {
+  trace_context?: Record<string,string>;
   id: string;
   run_id: string;
   status: JobStatus;
@@ -42,9 +44,9 @@ export class AgentJobQueue {
   }): Promise<AgentJob> {
     const result = await this.db.query<AgentJob>(
       `INSERT INTO agent_jobs (
-         id, run_id, priority
+         id, run_id, priority, trace_context
        )
-       VALUES ($1, $2, $3)
+       VALUES ($1, $2, $3, $4::jsonb)
        ON CONFLICT (run_id)
        DO UPDATE SET run_id = EXCLUDED.run_id
        RETURNING *`,
@@ -52,6 +54,7 @@ export class AgentJobQueue {
         randomUUID(),
         input.runId,
         input.priority ?? 0,
+        JSON.stringify(injectTraceHeaders()),
       ],
     );
 

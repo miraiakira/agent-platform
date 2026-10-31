@@ -1,15 +1,25 @@
 package main
 
 import (
-	"log"
+	"context"
+	"errors"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/miraiakira/businese-api/internal/httpapi"
+	"github.com/miraiakira/businese-api/internal/telemetry"
 )
 
-func main() {
+func main() { os.Exit(run()) }
+
+func run() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	shutdownTelemetry := telemetry.Init(ctx)
+	defer shutdownTelemetry()
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -21,10 +31,19 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("business-api listening on %s", addr)
-
-	if err := server.ListenAndServe(); err != nil &&
-		err != http.ErrServerClosed {
-		log.Fatal(err)
+	telemetry.Event(ctx, "server.started", "")
+	done := make(chan error, 1)
+	go func() { done <- server.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+	case err := <-done:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			telemetry.Event(ctx, "server.failed", "HTTP_SERVER_ERROR")
+			return 1
+		}
 	}
+	return 0
 }

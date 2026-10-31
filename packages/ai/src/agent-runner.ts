@@ -1,3 +1,4 @@
+import { startSpan, observeModelStream, observeOperation, metric } from "@eap/observability";
 import type {
   AgentMessage,
   FunctionCall,
@@ -24,6 +25,7 @@ import {
 
 export interface AgentRunnerOptions {
   provider: ModelProvider;
+  model?: string;
   toolLifecycle?: {
     before(call: FunctionCall): Promise<void>;
     after(call: FunctionCall, result: import("./tool-execution").ToolExecutionResult): Promise<void>;
@@ -38,6 +40,7 @@ export interface AgentRunnerOptions {
 export class AgentRunner {
   private readonly toolLifecycle?: AgentRunnerOptions["toolLifecycle"];
   private readonly provider: ModelProvider;
+  private readonly model: string;
   private readonly tools: ToolRegistry;
   private readonly budget: ExecutionBudget;
   private readonly onTrace?: AgentRunnerOptions["onTrace"];
@@ -45,6 +48,7 @@ export class AgentRunner {
   constructor(options: AgentRunnerOptions) {
     this.toolLifecycle = options.toolLifecycle;
     this.provider = options.provider;
+    this.model = options.provider.name === "mock" ? "mock-model" : options.model ?? "unknown";
     this.tools = options.tools;
     this.budget = {
       ...DEFAULT_BUDGET,
@@ -58,6 +62,10 @@ export class AgentRunner {
     signal?: AbortSignal;
   }): AsyncIterable<StreamEvent> {
     const trace = createTrace();
+    const runSpan = startSpan("agent.run", { "agent.business_trace_id": trace.traceId, "agent.provider": this.provider.name, "agent.model": this.model });
+    const runStarted = performance.now();
+    let runError: string | undefined;
+    metric("agent_active_runs",1);
 
     const deadline = createDeadline(
       this.budget.maxDurationMs,
@@ -128,7 +136,8 @@ export class AgentRunner {
                 this.budget.maxOutputTokens,
             });
 
-          for await (const event of abortableStream(modelStream, deadline.signal)) {
+          for await (const event of observeModelStream(() => abortableStream(modelStream, deadline.signal),
+            { "agent.provider": this.provider.name, "agent.model": this.model }, runSpan.context)) {
             deadline.throwIfAborted();
 
             switch (event.type) {
@@ -167,6 +176,7 @@ export class AgentRunner {
                 }
 
                 addUsage(trace.usage, event.usage);
+                trace.usageReports = (trace.usageReports ?? 0) + 1;
                 usageReceived = true;
                 break;
 
@@ -242,7 +252,8 @@ export class AgentRunner {
                 maxOutputTokens: this.budget.maxOutputTokens,
               });
 
-            for await (const event of abortableStream(finalStream, deadline.signal)) {
+            for await (const event of observeModelStream(() => abortableStream(finalStream, deadline.signal),
+              { "agent.provider": this.provider.name, "agent.model": this.model }, runSpan.context)) {
               deadline.throwIfAborted();
 
               if (event.type === "text-delta") {
@@ -257,6 +268,7 @@ export class AgentRunner {
                 }
 
                 addUsage(trace.usage, event.usage);
+                trace.usageReports = (trace.usageReports ?? 0) + 1;
                 finalUsageReceived = true;
 
                 yield event;
@@ -372,7 +384,7 @@ export class AgentRunner {
 
           try {
             await this.toolLifecycle?.before(call);
-            const result = await executeToolWithPolicy(
+            const result = await observeOperation("tool", { "agent.tool.name": this.tools.definitions().some((tool) => tool.name === call.function.name) ? call.function.name : "unknown" }, () => executeToolWithPolicy(
               this.tools,
               call.function.name,
               call.function.arguments,
@@ -382,7 +394,7 @@ export class AgentRunner {
                 remainingMs:
                   deadline.remainingMs,
               },
-            );
+            ), (result) => result.errorCode, runSpan.context);
 
             await this.toolLifecycle?.after(call, result);
             deadline.throwIfAborted();
@@ -438,6 +450,7 @@ export class AgentRunner {
         error instanceof RuntimeError ? error.code : "AGENT_ERROR"
       );
 
+      runError = code;
       yield {
         type: "error",
         code,
@@ -448,6 +461,11 @@ export class AgentRunner {
       };
     } finally {
       deadline.dispose();
+      const outcomeError = runError ?? (!terminal ? deadline.terminationReason?.code ?? "INTERRUPTED" : undefined);
+      runSpan.end(outcomeError);
+      metric("agent_active_runs",-1);
+      metric("agent_run_duration_seconds",(performance.now()-runStarted)/1000,{status:outcomeError ?? "completed"});
+      metric("agent_runs_total",1,{status:outcomeError ?? "completed"});
 
       trace.durationMs =
         Date.now() -

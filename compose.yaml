@@ -7,6 +7,9 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       ADDR: ":8080"
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     restart: unless-stopped
   postgres:
     image: postgres:17-alpine
@@ -25,5 +28,102 @@ services:
       timeout: 3s
       retries: 10
 
+
+  otel-collector:
+    profiles: [observability]
+    build:
+      context: ./infra/observability
+      args:
+        BASE_IMAGE: otel/opentelemetry-collector-contrib:0.135.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports: ["127.0.0.1:4318:4318"]
+    volumes:
+      - ./infra/observability/collector.yaml:/etc/otelcol/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:13133"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  prometheus:
+    profiles: [observability]
+    build:
+      context: ./infra/observability
+      args:
+        BASE_IMAGE: prom/prometheus:v3.6.0
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=24h", "--storage.tsdb.retention.size=512MB"]
+    volumes:
+      - ./infra/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  tempo:
+    profiles: [observability]
+    build:
+      context: ./infra/observability
+      args:
+        BASE_IMAGE: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    healthcheck:
+      test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:3200/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  loki:
+    profiles: [observability]
+    build:
+      context: ./infra/observability
+      args:
+        BASE_IMAGE: grafana/loki:3.5.7
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./infra/observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+    healthcheck:
+      test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  grafana:
+    profiles: [observability]
+    build:
+      context: ./infra/observability
+      args:
+        BASE_IMAGE: grafana/grafana:12.2.0
+    ports: ["127.0.0.1:3300:3000"]
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+
 volumes:
   postgres_data:
+  prometheus_data:
+  tempo_data:
+  loki_data:
+  grafana_data:

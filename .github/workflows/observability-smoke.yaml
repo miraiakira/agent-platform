@@ -1,0 +1,30 @@
+name: Observability Smoke
+on:
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OTEL_ENABLED: 'true'
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318
+      TEST_DATABASE_URL: postgresql://eap:eap_dev_password@localhost:5432/eap_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v5
+      - run: pnpm install --frozen-lockfile
+      - name: Start local observability and application services
+        run: docker compose --profile observability up -d --build --wait
+      - name: Create isolated integration database
+        run: docker compose exec -T postgres createdb -U eap eap_test
+      - name: Verify trace, metrics, logs, dashboard and Worker shutdown
+        run: pnpm test:observability
+      - name: Backend diagnostics
+        if: failure()
+        run: docker compose --profile observability logs --tail=100
+      - name: Stop services
+        if: always()
+        run: docker compose --profile observability down

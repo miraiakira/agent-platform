@@ -1,3 +1,4 @@
+import { estimateCost, currentTraceId } from "@eap/observability";
 import { AgentRunner, type AgentMessage, type ExecutionTrace, type ModelProvider, type StreamEvent, RuntimeError } from "@eap/ai";
 import type { ToolRegistry } from "@eap/tools";
 import { AgentEventStore, JobLifecycle, PersistenceStore, type ClaimedJob, type JobFinalization } from "@eap/persistence";
@@ -10,7 +11,7 @@ export interface JobExecutor {
 export class AgentExecutor implements JobExecutor {
   constructor(private readonly options: {
     store: PersistenceStore; events: AgentEventStore; lifecycle: JobLifecycle;
-    provider: ModelProvider; tools: ToolRegistry; maxDurationMs?: number;
+    provider: ModelProvider; model?: string; tools: ToolRegistry; maxDurationMs?: number;
   }) {}
 
   async execute(job: ClaimedJob, signal: AbortSignal): Promise<JobResult> {
@@ -23,7 +24,7 @@ export class AgentExecutor implements JobExecutor {
     }
     let trace: ExecutionTrace | undefined;
     const runner = new AgentRunner({
-      provider, tools,
+      provider, tools, model: this.options.model,
       budget: { maxDurationMs: this.options.maxDurationMs ?? 60_000 },
       onTrace(value) { trace = value; },
       toolLifecycle: {
@@ -54,6 +55,13 @@ export class AgentExecutor implements JobExecutor {
       status: terminal?.type === "done" ? "completed" : "failed",
       answer,
       error: terminal?.type === "error" ? { code: terminal.code, message: terminal.message } : undefined,
+      observability: trace ? {
+        provider: provider.name, model: provider.name === "mock" ? "mock-model" : this.options.model ?? "unknown",
+        otelTraceId: currentTraceId(), inputTokens: trace.usage.inputTokens, outputTokens: trace.usage.outputTokens,
+        usageSource: trace.usageReports === trace.modelCalls ? "reported" : (trace.usageReports ?? 0) > 0 ? "partial" : "unavailable",
+        cost: { ...estimateCost(provider.name, provider.name === "mock" ? "mock-model" : this.options.model ?? "unknown",trace.usage.inputTokens,trace.usage.outputTokens,new Date(trace.startedAt)),
+          ...(!trace.usageReports ? { usd: null } : {}) },
+      } : undefined,
       trace: trace ? {
         traceId: trace.traceId, durationMs: trace.durationMs, modelCalls: trace.modelCalls, toolCalls: trace.toolCalls,
         inputTokens: trace.usage.inputTokens, outputTokens: trace.usage.outputTokens,

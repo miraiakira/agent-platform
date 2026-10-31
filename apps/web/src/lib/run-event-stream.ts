@@ -1,3 +1,4 @@
+import { startSpan, errorCode } from "@eap/observability";
 import type { AgentEventStore, PersistenceStore } from "@eap/persistence";
 
 export function waitForPoll(ms: number, signal: AbortSignal): Promise<void> {
@@ -24,6 +25,8 @@ export function runEventStream(options: {
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      const span = startSpan("agent.sse.subscribe", { "agent.run_id": options.runId });
+      let failure: string | undefined;
       let cursor = options.cursor;
       try {
         while (!signal.aborted) {
@@ -44,8 +47,10 @@ export function runEventStream(options: {
           await waitForPoll(options.pollMs ?? 1000, signal);
         }
       } catch (error) {
+        failure = signal.aborted ? undefined : errorCode(error);
         if (!signal.aborted) controller.error(error);
       } finally {
+        span.end(failure);
         try { controller.close(); } catch { /* Consumer already cancelled. */ }
       }
     },

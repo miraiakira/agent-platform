@@ -41,6 +41,7 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [usage, setUsage] = useState<TokenUsage | null>(null);
+  const [cost, setCost] = useState<{ usd: number | null; coverage: string } | null>(null);
   const [status, setStatus] = useState("Ready");
   const [toolActivities, setToolActivities] = useState<
     Array<{
@@ -77,6 +78,7 @@ export function ChatPanel({
 
     setInput("");
     setUsage(null);
+    setCost(null);
     setLoading(true);
     setStatus("Generating");
 
@@ -180,6 +182,7 @@ export function ChatPanel({
           case "trace":
             setTraceId(event.traceId);
             setUsage(event.usage);
+            setCost(event.cost ?? null);
             break;
 
           case "error":
@@ -314,6 +317,13 @@ export function ChatPanel({
           {usage.outputTokens} · Total:{" "}
           {usage.totalTokens}
         </Typography.Text>
+      )}
+
+      {cost && (
+        <div className="mt-2 text-sm text-slate-500">
+          Estimated model cost: {cost.usd === null ? "Unknown" : `$${cost.usd.toFixed(6)}`}
+          {cost.coverage !== "reported" && " (reported usage only; incomplete coverage)"}
+        </div>
       )}
 
       <Space.Compact className="mt-4 w-full">

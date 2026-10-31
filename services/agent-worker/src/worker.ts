@@ -1,3 +1,4 @@
+import { inSpan, startSpan, extractTraceContext, withIdentity, metric, log, errorCode } from "@eap/observability";
 import { RuntimeError } from "@eap/ai";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentJobQueue, JobLifecycle, ClaimedJob } from "@eap/persistence";
@@ -18,7 +19,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
   if (!workerId || !Number.isFinite(lease) || lease < 0.1 || !Number.isInteger(concurrency) || concurrency < 1 || !Number.isFinite(poll) || poll <= 0) {
     throw new Error("Invalid worker configuration");
   }
-  const report = options.onError ?? ((error: unknown) => console.error("[worker]", error));
+  const report = options.onError ?? ((error: unknown) => log("error", "worker.error", { error_code: errorCode(error), worker_id: workerId }));
   const pause = () => delay(poll, undefined, { signal }).catch(() => {});
 
   async function execute(job: ClaimedJob) {
@@ -37,6 +38,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
           const renewed = await queue.renewLease(job.id, job.lease_token, lease);
           if (heartbeatStop.signal.aborted) break;
           if (!renewed) {
+            metric("agent_worker_lease_renewal_failures_total",1,{status:"rejected"});
             const current = await queue.getJobByRunId(job.run_id);
             if (heartbeatStop.signal.aborted) break;
             const cancelled = current?.status === "running" &&
@@ -48,6 +50,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
           }
         } catch (error) {
           report(error);
+          metric("agent_worker_lease_renewal_failures_total",1,{status:"unavailable"});
           if (!heartbeatStop.signal.aborted) {
             controller.abort(new RuntimeError("HEARTBEAT_FAILED", "Worker heartbeat failed"));
           }
@@ -79,17 +82,34 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
           result = { ...result, status: "failed", error: { code: reason.code, message: reason.message } };
         }
       }
-      const saved = await lifecycle.finalizeJob({ ...result, jobId: job.id, leaseToken: job.lease_token });
+      const saved = await inSpan("agent.job.finalize", { "agent.run_id": job.run_id, "agent.job_id": job.id },
+        () => lifecycle.finalizeJob({ ...result, jobId: job.id, leaseToken: job.lease_token }), undefined, (saved) => saved ? undefined : "LEASE_LOST");
+      log(!saved || result.error ? "warn" : "info", saved ? "job.finished" : "job.finalization_fenced", { error_code: saved ? result.error?.code : "LEASE_LOST" });
       if (!saved) report(new Error(`Finalization fenced: ${job.id}`));
-    } catch (error) { report(error); }
+      return result.error?.code ?? (saved ? undefined : "LEASE_LOST");
+    } catch (error) { report(error); return errorCode(error); }
   }
 
   await Promise.all(Array.from({ length: concurrency }, async () => {
     while (!signal.aborted) {
       try {
-        await queue.blockExpiredJobs();
+        const blocked = await queue.blockExpiredJobs();
+        if (blocked.length) metric("agent_worker_blocked_jobs_total",blocked.length);
+        const claimStarted = Date.now();
         const job = await queue.claim(workerId, lease);
-        if (job) await execute(job);
+        if (job) {
+          // Successful claim spans join the persisted submission context; idle polls do not flood tracing.
+          startSpan("agent.job.claim", { "agent.run_id": job.run_id, "agent.job_id": job.id },
+            extractTraceContext(job.trace_context), undefined, claimStarted).end();
+          metric("agent_worker_claims_total",1);
+          metric("agent_queue_wait_seconds",Math.max(0,(Date.now()-new Date(job.created_at).getTime())/1000));
+          metric("agent_worker_active_jobs",1);
+          const span = startSpan("agent.job.execute", { "agent.run_id": job.run_id, "agent.job_id": job.id }, extractTraceContext(job.trace_context));
+          let outcome: string | undefined;
+          try {
+            outcome = await withIdentity({ run_id: job.run_id, job_id: job.id, worker_id: workerId }, () => span.run(() => execute(job)));
+          } finally { span.end(outcome); metric("agent_worker_active_jobs",-1); }
+        }
         else await pause();
       } catch (error) {
         report(error);
