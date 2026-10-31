@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import { JobLifecycle } from "./job-lifecycle";
+import { insertEvent } from "./transaction";
 
 export type JobStatus =
   | "queued"
@@ -142,7 +144,8 @@ export class AgentJobQueue {
          AND lease_token = $2
          AND status = 'running'
          AND cancel_requested_at IS NULL
-         AND lease_expires_at > now()`,
+         AND EXISTS (SELECT 1 FROM agent_runs WHERE id=agent_jobs.run_id AND status='running')
+         AND lease_expires_at > clock_timestamp()`,
       [jobId, leaseToken, leaseSeconds],
     );
 
@@ -199,6 +202,9 @@ export class AgentJobQueue {
         );
       }
 
+      if (job?.status === "cancelled") {
+        await insertEvent(client, runId, "error", { type: "error", code: "CANCELLED", message: "Agent cancelled before execution" });
+      }
       await client.query("COMMIT");
 
       return Boolean(job);
@@ -215,54 +221,7 @@ export class AgentJobQueue {
     leaseToken: string,
     status: "completed" | "failed" | "cancelled",
   ): Promise<boolean> {
-    const client = await this.db.connect();
-
-    try {
-      await client.query("BEGIN");
-
-      const result = await client.query<{
-        run_id: string;
-      }>(
-        `UPDATE agent_jobs
-         SET status = $3,
-             finished_at = now(),
-             lease_expires_at = NULL
-         WHERE id = $1
-           AND lease_token = $2
-           AND status = 'running'
-           AND lease_expires_at > now()
-           AND (
-             $3 <> 'completed'
-             OR cancel_requested_at IS NULL
-           )
-         RETURNING run_id`,
-        [jobId, leaseToken, status],
-      );
-
-      const job = result.rows[0];
-
-      if (!job) {
-        await client.query("ROLLBACK");
-        return false;
-      }
-
-      await client.query(
-        `UPDATE agent_runs
-         SET status = $2,
-             finished_at = now()
-         WHERE id = $1 AND status = 'running'`,
-        [job.run_id, status],
-      );
-
-      await client.query("COMMIT");
-
-      return true;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    return new JobLifecycle(this.db).finalizeJob({ jobId, leaseToken, status });
   }
 
   async blockExpiredJobs(): Promise<string[]> {
@@ -308,6 +267,9 @@ export class AgentJobQueue {
         );
       }
 
+      for (const runId of runIds) {
+        await insertEvent(client, runId, "error", { type: "error", code: "LEASE_EXPIRED", message: "Worker interrupted; automatic replay disabled" });
+      }
       await client.query("COMMIT");
 
       return runIds;

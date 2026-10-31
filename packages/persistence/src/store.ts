@@ -71,6 +71,9 @@ export class PersistenceStore {
     role: MessageRole;
     content: JsonValue;
   }): Promise<StoredMessage> {
+    if (input.runId && (await this.db.query("SELECT 1 FROM agent_jobs WHERE run_id=$1", [input.runId])).rowCount) {
+      throw new Error("Queued run messages require finalizeJob with a valid lease");
+    }
     const result = await this.db.query<StoredMessage>(
       `INSERT INTO messages (
          id, conversation_id, run_id, role, content
@@ -194,7 +197,8 @@ export class PersistenceStore {
              ) THEN now()
              ELSE finished_at
            END
-       WHERE id = $1 AND status = $2`,
+       WHERE id = $1 AND status = $2
+         AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=agent_runs.id)`,
       [id, from, to],
     );
 
@@ -205,7 +209,8 @@ export class PersistenceStore {
     const result = await this.db.query(
       `UPDATE agent_runs
        SET heartbeat_at = now()
-       WHERE id = $1 AND status = 'running'`,
+       WHERE id = $1 AND status = 'running'
+         AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=agent_runs.id)`,
       [runId],
     );
 
@@ -224,7 +229,8 @@ export class PersistenceStore {
            output = $3::jsonb,
            error = $4::jsonb,
            finished_at = now()
-       WHERE id = $1 AND status = 'running'`,
+       WHERE id = $1 AND status = 'running'
+         AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=agent_runs.id)`,
       [
         input.runId,
         input.status,
@@ -248,6 +254,9 @@ export class PersistenceStore {
 
     try {
       await client.query("BEGIN");
+      if ((await client.query("SELECT 1 FROM agent_jobs WHERE run_id=$1", [input.runId])).rowCount) {
+        throw new Error("Queued run trace requires finalizeJob with a valid lease");
+      }
 
       await client.query(
         `UPDATE agent_runs
@@ -326,9 +335,8 @@ export class PersistenceStore {
          id, run_id, tool_call_id, tool_name,
          idempotency_key, status, input
        )
-       VALUES (
-         $1, $2, $3, $4, $5, 'reserved', $6::jsonb
-       )
+       SELECT $1, $2, $3, $4, $5, 'reserved', $6::jsonb
+       WHERE NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=$2)
        ON CONFLICT DO NOTHING`,
       [
         randomUUID(),
@@ -351,7 +359,8 @@ export class PersistenceStore {
        SET status = 'running',
            started_at = now()
        WHERE idempotency_key = $1
-         AND status = 'reserved'`,
+         AND status = 'reserved'
+         AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=tool_executions.run_id)`,
       [idempotencyKey],
     );
 
@@ -371,7 +380,8 @@ export class PersistenceStore {
            error = $4::jsonb,
            finished_at = now()
        WHERE idempotency_key = $1
-         AND status IN ('reserved', 'running')`,
+         AND status IN ('reserved', 'running')
+         AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id=tool_executions.run_id)`,
       [
         input.idempotencyKey,
         input.status,
@@ -410,6 +420,7 @@ export class PersistenceStore {
                'message', 'Run interrupted; automatic replay disabled'
              )
          WHERE status = 'running'
+           AND NOT EXISTS (SELECT 1 FROM agent_jobs WHERE run_id = agent_runs.id)
            AND (
              heartbeat_at IS NULL
              OR heartbeat_at < $1

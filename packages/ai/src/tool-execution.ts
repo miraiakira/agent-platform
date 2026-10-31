@@ -47,7 +47,7 @@ export async function executeToolWithPolicy(
     remainingMs: () => number;
   },
 ): Promise<ToolExecutionResult> {
-  const maxAttempts = options.budget.maxToolRetries + 1;
+  const maxAttempts = registry.isRetrySafe(name) ? options.budget.maxToolRetries + 1 : 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (options.signal.aborted) {
@@ -72,11 +72,18 @@ export async function executeToolWithPolicy(
     );
 
     try {
-      const result = await registry.execute(
-        name,
-        args,
-        { signal },
-      );
+      let onAbort: (() => void) | undefined;
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(new RuntimeError("TOOL_TIMEOUT", "Tool execution aborted; outcome may be unknown"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+      let result: unknown;
+      try {
+        result = await Promise.race([registry.execute(name, args, { signal }), aborted]);
+      } finally {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      }
 
       if (signal.aborted) {
         throw new RuntimeError(

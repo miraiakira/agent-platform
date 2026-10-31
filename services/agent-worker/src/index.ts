@@ -1,154 +1,44 @@
 import { randomUUID } from "node:crypto";
+import { createModelProvider } from "@eap/ai";
+import { createBusinessTools } from "@eap/tools";
+import { createPool, AgentJobQueue, AgentEventStore, PersistenceStore, JobLifecycle } from "@eap/persistence";
+import { AgentExecutor } from "./executor";
+import { runWorker } from "./worker";
 
-import {
-  createPool,
-  AgentJobQueue,
-} from "@eap/persistence";
-
-import type { JobExecutor } from "./executor";
-
-const pool = createPool();
-const queue = new AgentJobQueue(pool);
-
-const workerId = `agent-worker-${randomUUID()}`;
-
-const LEASE_SECONDS = 30;
-const POLL_INTERVAL_MS = 1000;
-const HEARTBEAT_INTERVAL_MS = 10_000;
-
-let stopping = false;
-
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
+function positive(name: string, fallback: number) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid ${name}`);
+  return value;
 }
 
-async function runWorker(
-  executor: JobExecutor,
-) {
-  console.log(`[worker] started: ${workerId}`);
-
-  while (!stopping) {
-    let job;
-
-    try {
-      job = await queue.claim(
-        workerId,
-        LEASE_SECONDS,
-      );
-    } catch (error) {
-      console.error("[worker] claim failed", error);
-      await sleep(POLL_INTERVAL_MS);
-      continue;
-    }
-
-    if (!job) {
-      await sleep(POLL_INTERVAL_MS);
-      continue;
-    }
-
-    console.log(
-      `[worker] claimed run=${job.run_id}`,
-    );
-
-    const controller = new AbortController();
-
-    let heartbeatInProgress = false;
-
-    const heartbeat = setInterval(async () => {
-      if (heartbeatInProgress) return;
-
-      heartbeatInProgress = true;
-
-      try {
-        const renewed = await queue.renewLease(
-          job.id,
-          job.lease_token,
-          LEASE_SECONDS,
-        );
-
-        if (!renewed) {
-          console.error(
-            `[worker] lease lost: ${job.id}`,
-          );
-
-          controller.abort();
-        }
-
-        const current = await queue.getJobByRunId(
-          job.run_id,
-        );
-
-        if (current?.cancel_requested_at) {
-          controller.abort();
-        }
-      } catch (error) {
-        console.error(
-          "[worker] heartbeat failed",
-          error,
-        );
-
-        // 续租失败时保守停止执行。
-        controller.abort();
-      } finally {
-        heartbeatInProgress = false;
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-
-    try {
-      await executor.execute(
-        job,
-        controller.signal,
-      );
-
-      if (controller.signal.aborted) {
-        await queue.finish(
-          job.id,
-          job.lease_token,
-          "cancelled",
-        );
-      } else {
-        const completed = await queue.finish(
-          job.id,
-          job.lease_token,
-          "completed",
-        );
-
-        if (!completed) {
-          console.error(
-            `[worker] completion rejected: ${job.id}`,
-          );
-        }
-      }
-    } catch (error) {
-      console.error(
-        `[worker] run failed: ${job.run_id}`,
-        error,
-      );
-
-      await queue.finish(
-        job.id,
-        job.lease_token,
-        controller.signal.aborted
-          ? "cancelled"
-          : "failed",
-      );
-    } finally {
-      clearInterval(heartbeat);
-    }
+async function main() {
+  const providerName = process.env.LLM_PROVIDER ?? "mock";
+  if (providerName !== "mock" && providerName !== "deepseek") throw new Error("Unsupported worker LLM_PROVIDER");
+  const provider = createModelProvider({ provider: providerName, apiKey: process.env.LLM_API_KEY, model: process.env.LLM_MODEL, baseURL: process.env.LLM_BASE_URL || undefined });
+  const pool = createPool();
+  const shutdown = new AbortController();
+  const stop = () => shutdown.abort();
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  try {
+    const lifecycle = new JobLifecycle(pool);
+    await runWorker({
+      queue: new AgentJobQueue(pool), lifecycle,
+      executor: new AgentExecutor({ store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, provider,
+        tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY }),
+        maxDurationMs: positive("WORKER_MAX_DURATION_MS", 60_000),
+      }),
+      workerId: process.env.WORKER_ID ?? `agent-worker-${randomUUID()}`,
+      signal: shutdown.signal,
+      concurrency: positive("WORKER_CONCURRENCY", 1),
+      leaseSeconds: positive("WORKER_LEASE_SECONDS", 30),
+      pollIntervalMs: positive("WORKER_POLL_INTERVAL_MS", 1000),
+    });
+  } finally {
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
+    await pool.end();
   }
 }
 
-process.on("SIGTERM", () => {
-  stopping = true;
-});
-
-process.on("SIGINT", () => {
-  stopping = true;
-});
-
-// 下一步注入真正的 Day 6 AgentExecutor。
-// 不要使用空实现启动 Worker，否则会错误地把任务标记为完成。
-
-export { runWorker, pool };
+main().catch((error) => { console.error("[worker] fatal", error); process.exitCode = 1; });

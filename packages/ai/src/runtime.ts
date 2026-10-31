@@ -164,3 +164,30 @@ export function combineSignals(
 
   return AbortSignal.any([parent, timeout]);
 }
+/** Bound iteration even when a custom provider ignores its AbortSignal. */
+export async function* abortableStream<T>(stream: AsyncIterable<T>, signal: AbortSignal): AsyncGenerator<T> {
+  const iterator = stream[Symbol.asyncIterator]();
+  let done = false;
+  try {
+    while (!done) {
+      if (signal.aborted) throw signal.reason ?? new RuntimeError("CANCELLED", "Agent cancelled");
+      let onAbort: (() => void) | undefined;
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(signal.reason ?? new RuntimeError("CANCELLED", "Agent cancelled"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+      let next: IteratorResult<T>;
+      try {
+        next = await Promise.race([iterator.next(), aborted]);
+      } finally {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      }
+      done = Boolean(next.done);
+      if (!next.done) yield next.value;
+    }
+  } finally {
+    // An uncooperative iterator may never resolve return(); do not block fencing/cleanup.
+    if (!done) void iterator.return?.().catch(() => {});
+  }
+}

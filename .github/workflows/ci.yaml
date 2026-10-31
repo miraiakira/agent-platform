@@ -77,6 +77,9 @@ jobs:
       - name: Agent Worker Typecheck
         run: pnpm --filter @eap/agent-worker typecheck
 
+      - name: Agent Worker Integration Tests
+        run: pnpm --filter @eap/agent-worker test
+
       # ------------------------------------
       # Next.js Web
       # ------------------------------------

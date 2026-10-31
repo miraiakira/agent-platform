@@ -23,3 +23,4 @@ export type {
   SpanInput,
   StoredMessage,
 } from "./types";
+export * from "./job-lifecycle";

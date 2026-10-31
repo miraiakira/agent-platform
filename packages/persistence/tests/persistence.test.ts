@@ -1,34 +1,31 @@
 import {
-  beforeAll,
-  afterAll,
+  beforeEach,
+  afterEach,
   describe,
   expect,
   it,
 } from "vitest";
 
 import {
-  createPool,
+
   PersistenceStore,
   recoverInterruptedRuns,
 } from "../src";
 
 import type { Pool } from "pg";
+import { createTestDatabase } from "./database";
 
 describe("PersistenceStore integration", () => {
   let pool: Pool;
   let store: PersistenceStore;
 
-  beforeAll(async () => {
-    pool = createPool(
-      process.env.TEST_DATABASE_URL,
-    );
-
+  let database: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
+  beforeEach(async () => {
+    database = await createTestDatabase();
+    pool = database.pool;
     store = new PersistenceStore(pool);
   });
-
-  afterAll(async () => {
-    await pool?.end();
-  });
+  afterEach(async () => { await database?.close(); database = undefined; });
 
   it("persists conversations and messages", async () => {
     const conversation =

@@ -1,69 +1,34 @@
 
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { createTestDatabase } from "./database";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
 
 import {
   AgentEventStore,
   AgentJobQueue,
   PersistenceStore,
-  createPool,
+  JobLifecycle,
 } from "../src";
 
-const connectionString = process.env.TEST_DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error(
-    "TEST_DATABASE_URL is required for job queue integration tests",
-  );
-}
-
 describe("Day 7 PostgreSQL Job Queue", () => {
-  let adminPool: Pool;
-  let schema: string;
+  let database: Awaited<ReturnType<typeof createTestDatabase>> | undefined;
   let pool: Pool;
   let store: PersistenceStore;
   let queue: AgentJobQueue;
   let events: AgentEventStore;
 
-  beforeAll(() => {
-    adminPool = createPool(connectionString);
-  });
-
   beforeEach(async () => {
-    // Claims scan the entire queue, so every test needs an isolated queue.
-    // A schema also keeps existing database rows and parallel suites untouched.
-    schema = `job_queue_test_${randomUUID().replaceAll("-", "")}`;
-    await adminPool.query(`CREATE SCHEMA "${schema}"`);
-    pool = new Pool({
-      connectionString,
-      options: `-c search_path=${schema}`,
-    });
-
-    const migrationDir = new URL("../migrations/", import.meta.url);
-    const migrations = (await readdir(migrationDir))
-      .filter((name) => name.endsWith(".sql"))
-      .sort();
-
-    for (const migration of migrations) {
-      await pool.query(await readFile(new URL(migration, migrationDir), "utf8"));
-    }
-
+    database = await createTestDatabase();
+    pool = database.pool;
     store = new PersistenceStore(pool);
     queue = new AgentJobQueue(pool);
     events = new AgentEventStore(pool);
   });
 
   afterEach(async () => {
-    await pool?.end();
-    if (schema) {
-      await adminPool.query(`DROP SCHEMA "${schema}" CASCADE`);
-    }
-  });
-
-  afterAll(async () => {
-    await adminPool?.end();
+    await database?.close();
+    database = undefined;
   });
 
   async function createTestRun() {
@@ -399,5 +364,73 @@ describe("Day 7 PostgreSQL Job Queue", () => {
     const persisted = await events.listAfter(run.id, "0");
 
     expect(persisted).toHaveLength(0);
+  });
+
+  it("submits idempotently and rejects a different payload", async () => {
+    const lifecycle = new JobLifecycle(pool);
+    const input = { requestKey: randomUUID(), messages: [{ role: "user" as const, content: "hello" }] };
+    const [first, second] = await Promise.all([lifecycle.submit(input), lifecycle.submit(input)]);
+    expect(second.id).toBe(first.id);
+    expect((await pool.query("SELECT * FROM agent_jobs")).rowCount).toBe(1);
+    expect((await store.listMessages(first.conversation_id))).toHaveLength(1);
+    await expect(lifecycle.submit({ ...input, messages: [{ role: "user", content: "different" }] })).rejects.toThrow("different request");
+  });
+
+  it("rolls back conversation, run and messages when enqueue fails", async () => {
+    await pool.query("ALTER TABLE agent_jobs ADD CONSTRAINT fail_enqueue CHECK (priority < 0)");
+    await expect(new JobLifecycle(pool).submit({ requestKey: randomUUID(), messages: [{ role: "user", content: "hello" }] })).rejects.toThrow();
+    for (const table of ["conversations", "agent_runs", "agent_jobs", "messages"]) {
+      expect((await pool.query(`SELECT * FROM ${table}`)).rowCount).toBe(0);
+    }
+  });
+
+  it("rolls back finalization when writing the terminal event fails", async () => {
+    const { run } = await createTestJob();
+    const job = (await queue.claim("rollback"))!;
+    await pool.query("ALTER TABLE agent_events ADD CONSTRAINT fail_terminal CHECK (event_type <> 'done')");
+    await expect(new JobLifecycle(pool).finalizeJob({ jobId: job.id, leaseToken: job.lease_token, status: "completed", answer: "answer" })).rejects.toThrow();
+    expect((await store.getRun(run.id))?.status).toBe("running");
+    expect((await queue.getJobByRunId(run.id))?.status).toBe("running");
+    expect(await store.listMessages(run.conversation_id)).toHaveLength(0);
+  });
+
+  it("serializes cancellation against completion and writes one terminal event", async () => {
+    const { run } = await createTestJob();
+    const job = (await queue.claim("race"))!;
+    await Promise.all([
+      queue.requestCancellation(run.id),
+      new JobLifecycle(pool).finalizeJob({ jobId: job.id, leaseToken: job.lease_token, status: "completed", answer: "answer" }),
+    ]);
+    const updated = (await store.getRun(run.id))!;
+    expect(["completed", "cancelled"]).toContain(updated.status);
+    expect((await queue.getJobByRunId(run.id))?.status).toBe(updated.status);
+    expect((await events.listAfter(run.id, "0")).filter((e) => ["done", "error"].includes(e.event_type))).toHaveLength(1);
+    expect(await queue.finish(job.id, job.lease_token, "completed")).toBe(false);
+  });
+
+  it("waits for earlier event transactions before allocating a cursor", async () => {
+    const { run } = await createTestJob();
+    const job = (await queue.claim("sequence"))!;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM agent_jobs WHERE id=$1 FOR UPDATE", [job.id]);
+      await client.query("UPDATE agent_runs SET event_sequence=event_sequence+1 WHERE id=$1", [run.id]);
+      await client.query("INSERT INTO agent_events(run_id,sequence,event_type,payload) VALUES($1,1,'text-delta','{}')", [run.id]);
+      const pending = events.append({ runId: run.id, jobId: job.id, leaseToken: job.lease_token, type: "text-delta", payload: { text: "second" } });
+      expect(await events.listAfter(run.id, "0")).toHaveLength(0);
+      await client.query("COMMIT");
+      expect((await pending)?.id).toBe("2");
+      expect((await events.listAfter(run.id, "0")).map((e) => e.id)).toEqual(["1", "2"]);
+      expect((await events.listAfter(run.id, "1")).map((e) => e.id)).toEqual(["2"]);
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
+
+  it("refuses finalization if the run is no longer running", async () => {
+    const { run } = await createTestJob();
+    const job = (await queue.claim("run-fence"))!;
+    await pool.query("UPDATE agent_runs SET status='interrupted' WHERE id=$1", [run.id]);
+    expect(await queue.finish(job.id, job.lease_token, "completed")).toBe(false);
+    expect((await queue.getJobByRunId(run.id))?.status).toBe("running");
   });
 });

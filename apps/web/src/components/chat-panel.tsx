@@ -5,11 +5,13 @@ import {
   Card,
   Input,
   Space,
+  Select,
   Tag,
   Typography,
   message,
 } from "antd";
 import { useRef, useState } from "react";
+import { subscribeRun } from "@/lib/async-agent-client";
 
 import {
   readSSE,
@@ -31,6 +33,10 @@ export function ChatPanel({
 }: {
   endpoint?: string;
 }) {
+  const [mode, setMode] = useState<"stream" | "async">("stream");
+  const conversationRef = useRef<string | undefined>(undefined);
+  const runRef = useRef<string | undefined>(undefined);
+  const pendingSubmissionRef = useRef<{ key: string; body: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -81,24 +87,38 @@ export function ChatPanel({
     let completed = false;
 
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messages: nextMessages,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error(
-          `Stream request failed: ${response.status}`,
-        );
+      let events: AsyncIterable<ChatStreamEvent>;
+      if (mode === "async" && endpoint === "/api/agent/stream") {
+        const body = JSON.stringify({ conversationId: conversationRef.current, messages: nextMessages });
+        if (pendingSubmissionRef.current?.body !== body) {
+          pendingSubmissionRef.current = { key: crypto.randomUUID(), body };
+        }
+        const requestKey = pendingSubmissionRef.current.key;
+        const submit = () => fetch("/api/agent/jobs", {
+          method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestKey },
+          body, signal: controller.signal,
+        });
+        let response: Response;
+        try { response = await submit(); } catch (error) {
+          if (controller.signal.aborted) throw error;
+          response = await submit();
+        }
+        if (!response.ok) throw new Error((await response.json()).error ?? "Job submission failed");
+        const job = await response.json();
+        pendingSubmissionRef.current = null;
+        conversationRef.current = job.conversationId;
+        runRef.current = job.runId;
+        events = subscribeRun(job.eventsUrl, controller.signal);
+      } else {
+        const response = await fetch(endpoint, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: nextMessages }), signal: controller.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`Stream request failed: ${response.status}`);
+        events = readSSE(response.body);
       }
 
-      for await (const event of readSSE(response.body)) {
+      for await (const event of events) {
         if (controller.signal.aborted) break;
 
         switch (event.type) {
@@ -159,6 +179,7 @@ export function ChatPanel({
 
           case "trace":
             setTraceId(event.traceId);
+            setUsage(event.usage);
             break;
 
           case "error":
@@ -198,6 +219,7 @@ export function ChatPanel({
         }
       }
 
+      runRef.current = undefined;
       controllerRef.current = null;
       setLoading(false);
       setToolActivities([]);
@@ -216,6 +238,16 @@ export function ChatPanel({
       }
     >
       {contextHolder}
+      {isAgentMode && (
+        <Select
+          aria-label="Execution mode"
+          value={mode}
+          disabled={loading}
+          onChange={(value) => setMode(value)}
+          options={[{ value: "stream", label: "Stream" }, { value: "async", label: "Async" }]}
+          className="mb-4 w-40"
+        />
+      )}
 
       <div className="mb-4 flex min-h-80 flex-col gap-3">
         {messages.length === 0 && (
@@ -297,7 +329,15 @@ export function ChatPanel({
         {loading ? (
           <Button
             danger
-            onClick={() => controllerRef.current?.abort()}
+            onClick={() => {
+              const runId = runRef.current;
+              if (mode === "async" && runId) {
+                void fetch(`/api/agent/runs/${runId}/cancel`, { method: "POST" }).then((response) => {
+                  if (!response.ok) throw new Error("Cancellation rejected");
+                  setStatus("Cancelling");
+                }).catch(() => messageApi.error("Unable to cancel job"));
+              } else controllerRef.current?.abort();
+            }}
           >
             Stop
           </Button>

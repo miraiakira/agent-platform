@@ -8,6 +8,7 @@ import type {
 import { ToolRegistry } from "@eap/tools";
 
 import {
+  abortableStream,
   addSpan,
   addUsage,
   createDeadline,
@@ -23,6 +24,10 @@ import {
 
 export interface AgentRunnerOptions {
   provider: ModelProvider;
+  toolLifecycle?: {
+    before(call: FunctionCall): Promise<void>;
+    after(call: FunctionCall, result: import("./tool-execution").ToolExecutionResult): Promise<void>;
+  };
   tools: ToolRegistry;
   budget?: Partial<ExecutionBudget>;
   onTrace?: (
@@ -31,12 +36,14 @@ export interface AgentRunnerOptions {
 }
 
 export class AgentRunner {
+  private readonly toolLifecycle?: AgentRunnerOptions["toolLifecycle"];
   private readonly provider: ModelProvider;
   private readonly tools: ToolRegistry;
   private readonly budget: ExecutionBudget;
   private readonly onTrace?: AgentRunnerOptions["onTrace"];
 
   constructor(options: AgentRunnerOptions) {
+    this.toolLifecycle = options.toolLifecycle;
     this.provider = options.provider;
     this.tools = options.tools;
     this.budget = {
@@ -121,7 +128,7 @@ export class AgentRunner {
                 this.budget.maxOutputTokens,
             });
 
-          for await (const event of modelStream) {
+          for await (const event of abortableStream(modelStream, deadline.signal)) {
             deadline.throwIfAborted();
 
             switch (event.type) {
@@ -235,7 +242,7 @@ export class AgentRunner {
                 maxOutputTokens: this.budget.maxOutputTokens,
               });
 
-            for await (const event of finalStream) {
+            for await (const event of abortableStream(finalStream, deadline.signal)) {
               deadline.throwIfAborted();
 
               if (event.type === "text-delta") {
@@ -263,6 +270,7 @@ export class AgentRunner {
               }
             }
 
+            deadline.throwIfAborted();
             if (!finalDone) {
               throw new RuntimeError(
                 "INVALID_RESPONSE",
@@ -363,6 +371,7 @@ export class AgentRunner {
           let attempts = 0;
 
           try {
+            await this.toolLifecycle?.before(call);
             const result = await executeToolWithPolicy(
               this.tools,
               call.function.name,
@@ -375,6 +384,7 @@ export class AgentRunner {
               },
             );
 
+            await this.toolLifecycle?.after(call, result);
             deadline.throwIfAborted();
 
             success = result.success;

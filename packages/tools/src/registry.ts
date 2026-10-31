@@ -13,6 +13,8 @@ export interface ToolContext {
 export interface Tool<T extends z.ZodTypeAny> {
   name: string;
   description: string;
+  /** Explicit safety declaration; unspecified tools must never be retried automatically. */
+  retrySafe?: boolean;
   schema: T;
   parameters: Record<string, unknown>;
   execute(
@@ -46,6 +48,10 @@ export class ToolRegistry {
     }
 
     this.tools.set(tool.name, tool);
+  }
+
+  isRetrySafe(name: string): boolean {
+    return this.tools.get(name)?.retrySafe === true;
   }
 
   definitions(): ToolDefinition[] {

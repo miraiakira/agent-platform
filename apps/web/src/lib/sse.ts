@@ -45,6 +45,7 @@ export type ChatStreamEvent =
 
 export async function* readSSE(
   body: ReadableStream<Uint8Array>,
+  onId?: (id: string) => void,
 ): AsyncGenerator<ChatStreamEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -82,6 +83,8 @@ export async function* readSSE(
         if (!data || data === "[DONE]") continue;
 
         const event = JSON.parse(data) as ChatStreamEvent;
+        const id = frame.split("\n").find((line) => line.startsWith("id:"))?.slice(3).trim();
+        if (id) onId?.(id);
         yield event;
       }
     }
@@ -92,6 +95,7 @@ export async function* readSSE(
       throw new Error("Incomplete SSE frame");
     }
   } finally {
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

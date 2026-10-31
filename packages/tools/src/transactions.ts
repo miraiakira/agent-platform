@@ -34,6 +34,7 @@ export function createBusinessTools(config: {
 
   registry.register({
     name: "get_high_risk_transactions",
+    retrySafe: true,
     description:
       "Query high-risk transactions for a UTC date, sorted by descending risk score. Returns at most the requested number of transactions.",
     schema: inputSchema,
