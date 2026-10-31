@@ -1,6 +1,8 @@
 import {
   createPool,
   PersistenceStore,
+  AgentJobQueue,
+  AgentEventStore,
 } from "@eap/persistence";
 
 const globalDb = globalThis as typeof globalThis & {
@@ -16,3 +18,6 @@ export const store =
 
 globalDb.__eapPool = pool;
 globalDb.__eapStore = store;
+
+export const jobQueue = new AgentJobQueue(pool);
+export const eventStore = new AgentEventStore(pool);

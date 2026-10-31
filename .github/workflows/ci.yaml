@@ -73,6 +73,9 @@ jobs:
 
       - name: Persistence Integration Tests
         run: pnpm --filter @eap/persistence test
+        
+      - name: Agent Worker Typecheck
+        run: pnpm --filter @eap/agent-worker typecheck
 
       # ------------------------------------
       # Next.js Web
