@@ -18,6 +18,8 @@ export interface ToolExecutionResult {
   success: boolean;
   attempts: number;
   errorCode?: string;
+  /** Only explicit registry pre-execution failures can prove there was no effect. */
+  executionStarted?: boolean;
 }
 
 export function serializeLimited(
@@ -138,6 +140,7 @@ export async function executeToolWithPolicy(
           success: false,
           attempts: attempt,
           errorCode: code,
+          ...(error instanceof ToolError ? { executionStarted: error.executionStarted } : {}),
         };
       }
 

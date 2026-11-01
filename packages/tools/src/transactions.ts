@@ -72,6 +72,8 @@ export function createBusinessTools(config: {
         const response = await fetchImpl(url, {
           headers: { ...injectTraceHeaders(), ...(context.authorization ? { "X-Eap-Tenant-Id": context.authorization.tenantId, "X-Eap-Actor-Id": context.authorization.actorUserId } : {}), ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
           signal: context.signal,
+          // A redirect must not forward the service identity or tenant headers.
+          redirect: "error",
         });
 
         if (!response.ok) {

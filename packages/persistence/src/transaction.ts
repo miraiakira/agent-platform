@@ -1,18 +1,28 @@
 import type { Pool, PoolClient } from "pg";
+import { scopedTransaction } from "./security-context";
 import type { ClaimedJob } from "./job-queue";
 
 export async function transaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const managed = scopedTransaction(pool, fn);
+  if (managed) return managed;
+  // Migration/test provisioner pools have no tenant facade. Keep their cleanup
+  // conservative too: a failed COMMIT may have an ambiguous database outcome.
   const client = await pool.connect();
+  let destroy = false;
+  let committing = false;
   try {
     await client.query("BEGIN");
     const result = await fn(client);
-    await client.query("COMMIT");
+    committing = true;
+    const committed = await client.query("COMMIT");
+    if (committed.command !== "COMMIT") throw new Error("Transaction did not commit");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    destroy = committing;
+    try { await client.query("ROLLBACK"); } catch { destroy = true; }
     throw error;
   } finally {
-    client.release();
+    client.release(destroy);
   }
 }
 

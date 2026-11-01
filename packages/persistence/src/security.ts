@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { currentTraceId } from '@eap/observability';
+import { currentTraceId, log } from '@eap/observability';
 import { securityContext, withSecurityContext, type SecurityContext } from './security-context';
 import { transaction } from './transaction';
 export const roles = ['owner','admin','member','viewer'] as const;
@@ -90,11 +90,27 @@ export class SecurityStore {
   await this.audit('tenant.change','tenant',securityContext()?.tenantId??null,'allow','STATUS_UPDATED',c);
  });}
  async authorizeTool(name:string) {
-  const role=await this.role();
   const ctx=securityContext();
-  const policy=(await this.db.query('SELECT * FROM tenant_tool_policies WHERE tenant_id=$1 AND tool_name=$2',[ctx?.tenantId,name])).rows[0] as ToolPolicy|undefined;
+  let role: Role | null;
+  let policy: ToolPolicy | undefined;
+  try {
+   const row=(await this.db.query<ToolPolicy & { actor_role: Role | null }>(
+    'SELECT p.*,eap_role($1,$2) AS actor_role FROM tenant_tool_policies p WHERE p.tenant_id=$1 AND p.tool_name=$3',
+    [ctx?.tenantId,ctx?.actorUserId,name])).rows[0];
+   policy=row; role=row?.actor_role ?? null;
+  } catch {
+   log('error','security.authorization_unavailable',{error_code:'AUTHORIZATION_UNAVAILABLE'});
+   throw new SecurityError(503,'AUTHORIZATION_UNAVAILABLE');
+  }
   const allowed=!!role && rolePermissions[role].includes('tool:execute') && !!policy?.enabled && policy.allowed_roles.includes(role) && !policy.requires_approval;
-  await this.audit('tool.execute','tool',/^[a-z][a-z0-9_]{0,79}$/.test(name)?name:null,allowed?'allow':'deny',allowed?'POLICY_ALLOWED':'TOOL_FORBIDDEN');
+  // Deliberately fail closed for every tool, including read-only/low risk.
+  // No name heuristic or implicit fail-open path can weaken a policy.
+  try {
+   await this.audit('tool.execute','tool',/^[a-z][a-z0-9_]{0,79}$/.test(name)?name:null,allowed?'allow':'deny',allowed?'POLICY_ALLOWED':'TOOL_FORBIDDEN');
+  } catch {
+   log('error','security.audit_unavailable',{error_code:'AUDIT_UNAVAILABLE'});
+   throw new SecurityError(503,'AUDIT_UNAVAILABLE');
+  }
   if(!allowed) throw new SecurityError(403,'TOOL_FORBIDDEN');
   return {tenantId:ctx!.tenantId!,actorUserId:ctx!.actorUserId,policyVersion:policy!.policy_version};
  }

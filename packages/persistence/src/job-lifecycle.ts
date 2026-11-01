@@ -1,4 +1,4 @@
-import { injectTraceHeaders, metric } from "@eap/observability";
+import { injectTraceHeaders, metric, log } from "@eap/observability";
 import { SecurityStore } from "./security";
 import { securityContext } from "./security-context";
 import { randomUUID } from "node:crypto";
@@ -151,16 +151,25 @@ export class JobLifecycle {
     });
   }
 
-  async finishTool(jobId: string, token: string, callId: string, result: { success: boolean; content: string; errorCode?: string }) {
+  async finishTool(jobId: string, token: string, callId: string, result: { success: boolean; content: string; errorCode?: string; executionStarted?: boolean }) {
     return transaction(this.db, async (client) => {
       const job = await lockLease(client, jobId, token);
       if (!job || job.cancel_requested_at) return false;
-      const unknown = !result.success && !["INVALID_ARGUMENTS", "UNKNOWN_TOOL", "TOOL_FORBIDDEN"].includes(result.errorCode ?? "");
+      const unknown = !result.success && result.executionStarted !== false;
       const updated = await client.query(
         `UPDATE tool_executions SET status=$3,output=$4::jsonb,finished_at=now()
-         WHERE run_id=$1 AND tool_call_id=$2 AND status='running'`,
+         WHERE run_id=$1 AND tool_call_id=$2 AND status='running' RETURNING id`,
         [job.run_id,callId,unknown ? "unknown" : result.success ? "succeeded" : "failed",JSON.stringify(result.content)],
       );
+      if (updated.rowCount === 1 && this.security && result.executionStarted !== false) {
+        try {
+          await this.security.audit('tool.execution.result','tool_execution',updated.rows[0].id,
+            result.success ? 'allow' : 'deny', unknown ? 'EXECUTION_OUTCOME_UNKNOWN' : result.success ? 'SUCCEEDED' : 'FAILED_AFTER_START', client);
+        } catch (error) {
+          log('error','security.audit_unavailable',{error_code:'AUDIT_UNAVAILABLE'});
+          throw error;
+        }
+      }
       return updated.rowCount === 1 && !unknown;
     });
   }

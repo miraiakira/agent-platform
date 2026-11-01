@@ -12,7 +12,6 @@ import {
 
 import { createBusinessTools } from "@eap/tools";
 import { SecurityError, securityContext } from "@eap/persistence";
-import { ToolError } from "@eap/tools";
 import { security } from "@/lib/persistence";
 import { store, pool } from "@/lib/persistence";
 
@@ -184,7 +183,7 @@ async function handlePOST(request: Request) {
 
   const tools = createBusinessTools({
     apiKey: process.env.BUSINESS_API_KEY,
-    authorize: async name => { try { return await security.authorizeTool(name); } catch(error) { if(error instanceof SecurityError) throw new ToolError("TOOL_FORBIDDEN", "Tool denied"); throw error; } },
+    authorize: name => security.authorizeTool(name),
     baseURL:
       process.env.BUSINESS_API_URL ??
       "http://127.0.0.1:8080",

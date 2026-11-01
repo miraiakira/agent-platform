@@ -1,4 +1,4 @@
-import { estimateCost, currentTraceId } from "@eap/observability";
+import { estimateCost, currentTraceId, log } from "@eap/observability";
 import { AgentRunner, type AgentMessage, type ExecutionTrace, type ModelProvider, type StreamEvent, RuntimeError } from "@eap/ai";
 import type { ToolRegistry } from "@eap/tools";
 import { AgentEventStore, JobLifecycle, PersistenceStore, type ClaimedJob, type SecurityStore, type JobFinalization } from "@eap/persistence";
@@ -35,7 +35,12 @@ export class AgentExecutor implements JobExecutor {
           })) throw new RuntimeError("TOOL_REPLAY_BLOCKED", "Lease invalid or tool intent already exists; replay disabled");
         },
         async after(call, result) {
-          if (!await lifecycle.finishTool(job.id, job.lease_token, call.id, result)) {
+          try {
+            if (!await lifecycle.finishTool(job.id, job.lease_token, call.id, result)) throw new Error("Outcome not committed");
+          } catch {
+            log("error", "security.tool_result_unavailable", { error_code: "EXECUTION_OUTCOME_UNKNOWN" });
+            // An external success cannot be undone. Leave the existing intent for
+            // finalize/recovery to mark UNKNOWN; never replay the effect.
             throw new RuntimeError("EXECUTION_OUTCOME_UNKNOWN", "Tool outcome cannot be safely committed");
           }
         },

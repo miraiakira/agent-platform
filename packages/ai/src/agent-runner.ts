@@ -397,6 +397,9 @@ export class AgentRunner {
             ), (result) => result.errorCode, runSpan.context);
 
             await this.toolLifecycle?.after(call, result);
+            if (!result.success && ["AUDIT_UNAVAILABLE", "AUTHORIZATION_UNAVAILABLE"].includes(result.errorCode ?? "")) {
+              throw new RuntimeError(result.errorCode!, "Tool security checks unavailable; execution stopped");
+            }
             deadline.throwIfAborted();
 
             success = result.success;

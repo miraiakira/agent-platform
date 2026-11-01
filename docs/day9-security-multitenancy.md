@@ -237,3 +237,135 @@ services/business-api/internal/httpapi/security.go
 services/business-api/internal/httpapi/security_test.go
 services/business-api/internal/httpapi/transactions_test.go
 ```
+
+## Day 9 Security Hardening
+
+本轮只加固事务、工具审计和 Go 内部服务边界，不扩展 Day 10。RLS、角色、表结构、Lease、Fencing、队列状态机与未知结果恢复策略保留，没有新增数据库迁移。
+
+### 风险核对
+
+| 项目 | 实际发现 |
+| --- | --- |
+| scopedPool | 旧 Proxy 只匹配原样 BEGIN/COMMIT/ROLLBACK。分号、注释、QueryConfig 或复合 SQL 可能绕过本地状态；结束命令的 finally 无论成功失败都清除 transaction 标记，回滚失败时存在错误回池的风险。 |
+| authorizeTool | 已经在工具前 await 审计，没有自动放行；但审计 PG 错误可能被泛化，生产 authorizer 包装也会把安全错误全部改成 TOOL_FORBIDDEN；失败是否真正执行过缺少可靠区分。 |
+| Go API | 已强制密钥、无默认开发密钥、端口绑定 loopback，主信任边界成立。Actor 只判断非空、重复 Header 不明确，以及 fetch 默认跟随重定向，仍需收紧。 |
+
+### scopedPool 事务生命周期
+
+新增显式 API，传入的身份必须先由 Session + Membership 或已验证的 Job 得到：
+
+```ts
+await withTenantTransaction(pool, { tenantId, actorUserId }, async (client) => {
+  await client.query('SELECT * FROM conversations WHERE id=$1', [conversationId]);
+});
+```
+
+管理器掌握同一连接上的 BEGIN → SET LOCAL ROLE → set_config(...,true) → callback → COMMIT。已有 `transaction(pool,fn)` 自动走此路径，`pool.query` 也始终包在完整事务内。回调不能 COMMIT、ROLLBACK 或 release；离开回调后保留的 client 不能继续查询。Client 同时绑定领取时的 Tenant/Actor，不允许借给另一个异步身份使用。没有 Tenant Context 时，RLS 默认不返回业务资源。
+
+保留旧仓库所需的 Promise connect/query/release 兼容入口，但它是受限 facade，不再把任意属性或原始 connection 暴露出去：
+
+- BEGIN / COMMIT / ROLLBACK 只接受单个受控命令，支持大小写、空白、嵌套注释、可选 WORK/TRANSACTION 和尾分号；这些变体仍由管理器处理。
+- END、ABORT、AND CHAIN、START TRANSACTION、SAVEPOINT 等不受支持的控制语法直接拒绝，不向数据库透传。
+- 普通查询只接受当前仓库使用的 SQL 语句种类，并强制 PostgreSQL extended protocol；复合多语句在任何语句执行前被拒绝。SQL 字符串值中的分号仍由 PostgreSQL 正确解析。
+- 不允许 QueryConfig 改成 simple protocol 或注入自定义 Submittable；只传递支持的 query 参数。此 facade 不是任意 pg 插件/回调 API 的替代品。
+
+RLS 与数据库角色权限保持原样。SQL 与上下文 API 属于可信服务器代码，参数必须绑定；这不是让不可信客户端任意执行 SQL 的 SQL 防火墙。不能把未经验证的 Header 直接作为可信身份。
+
+### 异常连接清理
+
+| 路径 | 处理 |
+| --- | --- |
+| 正常 COMMIT / ROLLBACK | 确认 PostgreSQL 返回的事务命令，再允许连接回池；事务局部角色与 GUC 自动复原。 |
+| 普通 SQL 报错 | 进入 failed，禁止继续受保护查询；ROLLBACK 成功后才可回池。调用方吞掉 SQL 错误也不能伪装提交成功。 |
+| BEGIN / 角色或 Context 初始化失败 | 尝试清理，并销毁连接。 |
+| COMMIT 失败或响应不确定 | 向调用方抛错，尝试回滚但始终销毁连接；不自动重试、不假定没有提交。 |
+| ROLLBACK 失败 / socket 断开 | 销毁连接，不将不可信连接归还池；事务管理器保留原始业务异常。 |
+| 空闲连接被服务器终止 | pg.Pool 移除失效连接；共享错误监听记录 DATABASE_CONNECTION_LOST，避免未处理的 error 事件导致服务退出。 |
+| 未结束事务、查询仍在途时 release | 销毁连接。released 标记不可逆，异步查询晚完成也不能复活 Client。 |
+
+真实 PostgreSQL 测试使用受限 LOGIN，故障注入仅由 fixture 管理连接终止自己的测试 backend。覆盖延迟外键导致的 COMMIT 失败、回滚期间真实断连、查询中断、初始化失败、并发租户、同一 backend 复用、无 Context 默认拒绝和异常后重新获取连接；验证行是否提交/回滚、backend PID 与实际 RLS 结果，不只验证 Mock 调用次数。
+
+### 工具授权与审计 Fail Closed
+
+本轮采用明确且统一的策略：**所有工具，包括低风险只读工具，默认且实际均 Fail Closed**。没有 Fail Open 配置，不根据工具名称猜测风险；未来若开放只读 Fail Open，必须额外定义显式策略与告警。
+
+角色与工具策略在同一 SQL 语句快照读取；注册表在真实 execute 之前等待授权及必要审计完成，并再次检查 abort。组织禁用、成员/角色撤销、未注册/别名工具、策略禁用及 requires_approval=true 都不能绕过授权。
+
+- 授权数据库读取失败：AUTHORIZATION_UNAVAILABLE。
+- 必要授权审计写入失败：AUDIT_UNAVAILABLE。
+- 已确认无权限或未获审批：TOOL_FORBIDDEN。
+
+前两者产生安全 JSON error log，不输出数据库原始异常、密钥、参数或消息。Tool Registry 保留这些安全错误码，AgentRunner 停止本次执行，不让模型反复尝试把安全设施故障当成普通工具输出。
+
+注册表用内部标记区分“真实 execute 尚未开始”的失败；普通工具抛出的同名错误不能仅凭错误名称宣称没有副作用。确定未开始的授权/审计拒绝可把 Ledger intent 标记 failed；不自动重放。
+
+授权审计与执行结果分开：
+
+- `tool.execute`：执行前的 allow/deny 授权决定。
+- `tool.execution.result`：真实执行结果，与 Ledger 更新处于同一事务，记录执行 ID 与 SUCCEEDED/EXECUTION_OUTCOME_UNKNOWN 等原因，不记录参数或返回正文。生产 Worker 显式接入 SecurityStore。
+
+未执行的拒绝不是一次工具执行结果；授权审计不可用时，通过安全错误日志和 failed Ledger 记录已知的零执行失败。外部副作用成功后若结果审计或 Ledger 回写失败，无法撤回外部操作：更新事务回滚，保留 intent，最终按原策略 UNKNOWN / blocked / interrupted 处理，禁止自动重放。
+
+### Go API 内部服务信任边界
+
+保留共享服务密钥方案：BUSINESS_API_KEY 由服务器配置、至少 32 字符；Compose 不提供默认值，缺失时配置失败，Go 启动也失败。生产必须注入独立随机密钥，测试中的固定值只属于测试环境。
+
+受保护接口先认证服务，再校验 Tenant/Actor；只有 Header 不会获得信任。Authorization、X-Eap-Tenant-Id、X-Eap-Actor-Id 都必须单值；Tenant 为 UUID，Actor 为当前项目支持的 1–128 位 ASCII 字母/数字/下划线/连字符 ID。空白、组合值、超长与重复值拒绝。健康检查仍公开。
+
+Worker/同步 Agent 工具客户端使用通过授权得到的上下文构造身份 Header，严格参数 schema 拒绝模型传入 tenant/actor/headers；HTTP redirect:error 避免重定向携带内部身份。密钥不放 URL，也不进入 Trace 属性、普通日志或审计日志。Go 原有可观测性白名单保留。
+
+Compose 的 127.0.0.1:8080 绑定保留；同 Docker 网络和同机访问也必须认证。公开代理不能替外部客户端注入内部服务密钥或相信其身份 Header。
+
+### 冻结边界与剩余生产措施
+
+部署这次补丁后完整重启 Web 与 Worker；Web 使用新的 scoped pool 缓存版本，避免热重载继续使用旧 Proxy。代码无法追溯改变旧进程中已经开始的事务。生产发布需要先排空/停止旧进程。
+
+Day 9 的冻结只涵盖当前架构与测试范围，不表示已达到真实企业数据上线认证：
+
+- 共享密钥只能证明调用者持钥，不能证明具体服务实例、真实 Actor 或资源归属；持钥服务被攻陷仍可伪造上下文。接入真实企业数据前必须实现 Go 资源级授权，并评估 mTLS/短期服务凭证、轮换与撤销。
+- 生产链路需 TLS、网络隔离、最小权限配置、Secret 管理与审计外部归档。当前 Go 返回合成样例数据。
+- 必要审计与授权数据库不可用时会停止执行；整个数据库失联时，错误持久化/SSE 投递也可能不可用，需依靠独立日志与监控告警。
+- 授权检查、审计、远端副作用不能成为同一个原子事务；已经发出的调用不能撤回。COMMIT 丢失确认时真实提交结果仍可能未知，需通过业务幂等键/人工核对处理，不允许盲目重试。
+- 不增加审批工作流或自动恢复 UNKNOWN；现有 requires_approval 拒绝与人工对账策略保留。
+
+
+### 本轮实际验收结果（2026-11-01）
+
+| 检查 | 实际结果 |
+| --- | --- |
+| `pnpm check` | 通过：211 项 TypeScript 测试、全部类型检查、Go Vet/Test、Next.js Build、Go Build 成功 |
+| Persistence 集成测试 | 58 项通过，其中新增 21 项真实 PostgreSQL 事务生命周期测试 |
+| Worker 集成测试 | 27 项通过，其中新增 6 项授权/审计/副作用/UNKNOWN 安全用例 |
+| Tools | 9 项通过，其中新增 2 项真实本机 HTTP 身份与重定向测试 |
+| AI / Observability / Web | 72 / 27 / 18 项通过 |
+| Go 单测 | `go test ./...` 通过，新增服务边界用例含重复 Header、伪造身份、畸形 Actor、无默认密钥 |
+| Go Race Test | `go test -race ./...` 通过 |
+| `git diff --check` | 通过 |
+
+只保留原有 Web see.test.ts 的 unused-vars warning，无 lint error。新增测试没有放宽既有期望、关闭 RLS 或使用超级用户执行业务隔离查询；管理连接仅用于准备、断连故障注入与结果断言。没有观察到现有 Day 1–9 自动化回归。没有运行真实 DeepSeek、Google OAuth 或远端 Actions。
+
+本轮范围可以作为 Day 9 代码冻结候选：已完成上述安全加固和本机验收；合并/发布仍需对应提交的远端 CI 通过，真实企业数据生产上线还需完成上面的资源授权及运维措施。不会因本轮完成而开始 Day 10。
+
+### 本轮实际修改文件
+
+```text
+apps/web/src/app/api/agent/stream/route.ts
+apps/web/src/lib/persistence.ts
+docs/day9-security-multitenancy.md
+packages/ai/src/agent-runner.ts
+packages/ai/src/tool-execution.ts
+packages/persistence/src/job-lifecycle.ts
+packages/persistence/src/runtime-pool.ts
+packages/persistence/src/security-context.ts
+packages/persistence/src/security.ts
+packages/persistence/src/transaction.ts
+packages/persistence/tests/transaction-safety.test.ts
+packages/tools/src/registry.ts
+packages/tools/src/transactions.ts
+packages/tools/tests/service-boundary.test.ts
+services/agent-worker/src/executor.ts
+services/agent-worker/src/index.ts
+services/agent-worker/tests/security.test.ts
+services/business-api/internal/httpapi/security.go
+services/business-api/internal/httpapi/security_test.go
+```

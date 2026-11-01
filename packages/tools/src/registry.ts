@@ -24,7 +24,9 @@ export interface Tool<T extends z.ZodTypeAny> {
   ): Promise<unknown>;
 }
 
+const beforeExecutionErrors = new WeakSet<ToolError>();
 export class ToolError extends Error {
+  get executionStarted() { return !beforeExecutionErrors.has(this); }
   constructor(
     public readonly code: string,
     message: string,
@@ -34,8 +36,23 @@ export class ToolError extends Error {
   }
 }
 
+function beforeExecutionError(code: string, message: string) {
+  const error = new ToolError(code, message);
+  beforeExecutionErrors.add(error);
+  return error;
+}
+
 export class ToolRegistry {
   constructor(private readonly authorize?: (name: string) => Promise<NonNullable<ToolContext["authorization"]>>) {}
+  private async authorization(name: string) {
+    if (!this.authorize) throw beforeExecutionError("TOOL_FORBIDDEN", "Tool authorization is required");
+    try { return await this.authorize(name); }
+    catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      const known = typeof code === "string" && ["TOOL_FORBIDDEN", "AUDIT_UNAVAILABLE", "AUTHORIZATION_UNAVAILABLE"].includes(code);
+      throw beforeExecutionError(known ? code : "AUTHORIZATION_UNAVAILABLE", "Tool authorization did not complete");
+    }
+  }
   private readonly tools = new Map<
     string,
     Tool<z.ZodTypeAny>
@@ -72,15 +89,15 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
 
     if (!tool) {
-      if (this.authorize) await this.authorize(name);
-      throw new ToolError(
+      if (this.authorize) await this.authorization(name);
+      throw beforeExecutionError(
         "UNKNOWN_TOOL",
         `Unknown tool: ${name}`,
       );
     }
 
     if (context.signal?.aborted) {
-      throw new ToolError("CANCELLED", "Tool cancelled");
+      throw beforeExecutionError("CANCELLED", "Tool cancelled");
     }
 
     let args: unknown;
@@ -88,7 +105,7 @@ export class ToolRegistry {
     try {
       args = JSON.parse(rawArguments);
     } catch {
-      throw new ToolError(
+      throw beforeExecutionError(
         "INVALID_ARGUMENTS",
         "Tool arguments are not valid JSON",
       );
@@ -97,14 +114,14 @@ export class ToolRegistry {
     const result = tool.schema.safeParse(args);
 
     if (!result.success) {
-      throw new ToolError(
+      throw beforeExecutionError(
         "INVALID_ARGUMENTS",
         "Tool arguments failed schema validation",
       );
     }
 
-    if (!this.authorize) throw new ToolError("TOOL_FORBIDDEN", "Tool authorization is required");
-    const authorization = await this.authorize(name);
+    const authorization = await this.authorization(name);
+    if (context.signal?.aborted) throw beforeExecutionError("CANCELLED", "Tool cancelled");
     return tool.execute(result.data, { ...context, authorization });
   }
 }
