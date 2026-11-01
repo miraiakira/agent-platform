@@ -1,3 +1,5 @@
+import { AgentPaused, type RunnerCheckpoint } from "./checkpoint";
+import type { ToolContext } from "@eap/tools";
 import { startSpan, observeModelStream, observeOperation, metric } from "@eap/observability";
 import type {
   AgentMessage,
@@ -27,9 +29,10 @@ export interface AgentRunnerOptions {
   provider: ModelProvider;
   model?: string;
   toolLifecycle?: {
-    before(call: FunctionCall): Promise<void>;
+    before(call: FunctionCall): Promise<void | ToolContext>;
     after(call: FunctionCall, result: import("./tool-execution").ToolExecutionResult): Promise<void>;
   };
+  beforeTool?: (state: RunnerCheckpoint, signal: AbortSignal) => Promise<void>;
   tools: ToolRegistry;
   budget?: Partial<ExecutionBudget>;
   onTrace?: (
@@ -38,6 +41,7 @@ export interface AgentRunnerOptions {
 }
 
 export class AgentRunner {
+  private readonly beforeTool?: AgentRunnerOptions["beforeTool"];
   private readonly toolLifecycle?: AgentRunnerOptions["toolLifecycle"];
   private readonly provider: ModelProvider;
   private readonly model: string;
@@ -47,6 +51,7 @@ export class AgentRunner {
 
   constructor(options: AgentRunnerOptions) {
     this.toolLifecycle = options.toolLifecycle;
+    this.beforeTool = options.beforeTool;
     this.provider = options.provider;
     this.model = options.provider.name === "mock" ? "mock-model" : options.model ?? "unknown";
     this.tools = options.tools;
@@ -60,20 +65,25 @@ export class AgentRunner {
   async *run(options: {
     messages: AgentMessage[];
     signal?: AbortSignal;
+    checkpoint?: RunnerCheckpoint;
   }): AsyncIterable<StreamEvent> {
-    const trace = createTrace();
+    const restored = options.checkpoint;
+    if (restored && (restored.version !== 1 || restored.provider !== this.provider.name || restored.model !== this.model || Object.entries(this.budget).some(([key,value]) => restored.budget[key as keyof ExecutionBudget] !== value) || !Number.isFinite(restored.elapsedActiveMs) || restored.elapsedActiveMs < 0 || !restored.batch || !Number.isInteger(restored.batch.nextIndex) || restored.batch.nextIndex < 0 || restored.batch.nextIndex >= restored.batch.calls.length)) throw new RuntimeError("INVALID_CHECKPOINT", "Incompatible Runner checkpoint");
+    const trace = restored ? structuredClone(restored.trace) : createTrace();
+    let batch: RunnerCheckpoint["batch"] | undefined = restored ? structuredClone(restored.batch) : undefined;
+    const previousActiveMs = restored?.elapsedActiveMs ?? 0;
     const runSpan = startSpan("agent.run", { "agent.business_trace_id": trace.traceId, "agent.provider": this.provider.name, "agent.model": this.model });
     const runStarted = performance.now();
     let runError: string | undefined;
     metric("agent_active_runs",1);
 
     const deadline = createDeadline(
-      this.budget.maxDurationMs,
+      Math.max(0, this.budget.maxDurationMs - previousActiveMs),
       options.signal,
     );
 
     const history: AgentMessage[] = [
-      ...options.messages,
+      ...(restored ? structuredClone(restored.history) : options.messages),
     ];
 
     const tools = this.tools.definitions();
@@ -86,7 +96,7 @@ export class AgentRunner {
       };
 
       for (
-        let iteration = 1;
+        let iteration = batch?.iteration ?? trace.modelCalls + 1;
         iteration <= this.budget.maxModelCalls;
         iteration++
       ) {
@@ -98,6 +108,10 @@ export class AgentRunner {
         const availableTools =
           remainingToolCalls > 0 ? tools : [];
 
+        let calls: FunctionCall[];
+        if (batch) {
+          calls = batch.calls;
+        } else {
         trace.modelCalls++;
 
         yield {
@@ -328,7 +342,7 @@ export class AgentRunner {
           );
         }
 
-        const calls: FunctionCall[] = [
+        calls = [
           ...pendingCalls.entries(),
         ]
           .sort(([a], [b]) => a - b)
@@ -365,9 +379,16 @@ export class AgentRunner {
           tool_calls: calls,
         });
 
-        for (const call of calls) {
-          deadline.throwIfAborted();
+        if (new Set(calls.map(call => call.id)).size !== calls.length) throw new RuntimeError("INVALID_RESPONSE", "Duplicate tool call IDs");
+        batch = { iteration, calls, nextIndex: 0 };
+        }
 
+        for (let index = batch.nextIndex; index < calls.length; index++) {
+          const call = calls[index]!;
+          deadline.throwIfAborted();
+          await this.beforeTool?.(structuredClone({ version: 1, provider: this.provider.name, model: this.model, history, trace, budget: this.budget,
+            elapsedActiveMs: previousActiveMs + performance.now() - runStarted, batch: { ...batch, nextIndex: index } }),deadline.signal);
+          deadline.throwIfAborted();
           trace.toolCalls++;
 
           yield {
@@ -383,13 +404,14 @@ export class AgentRunner {
           let attempts = 0;
 
           try {
-            await this.toolLifecycle?.before(call);
+            const toolContext = await this.toolLifecycle?.before(call);
             const result = await observeOperation("tool", { "agent.tool.name": this.tools.definitions().some((tool) => tool.name === call.function.name) ? call.function.name : "unknown" }, () => executeToolWithPolicy(
               this.tools,
               call.function.name,
               call.function.arguments,
               {
                 signal: deadline.signal,
+                context: toolContext ?? undefined,
                 budget: this.budget,
                 remainingMs:
                   deadline.remainingMs,
@@ -430,6 +452,7 @@ export class AgentRunner {
             });
           }
 
+          batch.nextIndex = index + 1;
           yield {
             type: "tool-result",
             toolCallId: call.id,
@@ -438,6 +461,7 @@ export class AgentRunner {
             attempts,
           };
         }
+        batch = undefined;
       }
 
       throw new RuntimeError(
@@ -446,6 +470,7 @@ export class AgentRunner {
       );
     } catch (error) {
       terminal = true;
+      if (error instanceof AgentPaused) { runError = "waiting_approval"; return; }
 
       // Timers and performance.now() need not agree at the boundary. Use the
       // first actual abort cause, even if a different error surfaces afterwards.
@@ -465,14 +490,14 @@ export class AgentRunner {
     } finally {
       deadline.dispose();
       const outcomeError = runError ?? (!terminal ? deadline.terminationReason?.code ?? "INTERRUPTED" : undefined);
-      runSpan.end(outcomeError);
+      runSpan.end(outcomeError === "waiting_approval" ? undefined : outcomeError);
       metric("agent_active_runs",-1);
-      metric("agent_run_duration_seconds",(performance.now()-runStarted)/1000,{status:outcomeError ?? "completed"});
-      metric("agent_runs_total",1,{status:outcomeError ?? "completed"});
+      if(outcomeError !== "waiting_approval") {
+        metric("agent_run_duration_seconds",(previousActiveMs+performance.now()-runStarted)/1000,{status:outcomeError ?? "completed"});
+        metric("agent_runs_total",1,{status:outcomeError ?? "completed"});
+      }
 
-      trace.durationMs =
-        Date.now() -
-        new Date(trace.startedAt).getTime();
+      trace.durationMs = previousActiveMs + performance.now() - runStarted;
 
       try {
         await this.onTrace?.(trace);

@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "pg": "^8.23.1",
-    "@eap/observability": "workspace:*"
+    "@eap/observability": "workspace:*",
+    "@eap/ai": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

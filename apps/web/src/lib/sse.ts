@@ -1,4 +1,5 @@
 export type ChatStreamEvent =
+  | {type:"approval";approvalId:string;status:string;toolName:string}
   | { type: "text-delta"; text: string }
   | {
       type: "usage";

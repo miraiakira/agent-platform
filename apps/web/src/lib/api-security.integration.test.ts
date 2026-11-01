@@ -2,10 +2,17 @@ import { beforeEach,afterEach,describe,it,expect,vi } from 'vitest';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { securityDatabase } from '../../../../packages/persistence/tests/security-database';
-import { SecurityStore,PersistenceStore,JobLifecycle,AgentEventStore,AgentJobQueue,withSecurityContext } from '@eap/persistence';
+import { ApprovalStore,SecurityStore,PersistenceStore,JobLifecycle,AgentEventStore,AgentJobQueue,withSecurityContext } from '@eap/persistence';
 const wiring=vi.hoisted(()=>({auth:vi.fn(),pool:undefined as unknown as Pool,security:undefined as unknown as SecurityStore,store:undefined as unknown as PersistenceStore,lifecycle:undefined as unknown as JobLifecycle}));
 vi.mock('./auth',()=>({getAuth:wiring.auth}));
-vi.mock('./persistence',()=>({get pool(){return wiring.pool;},get security(){return wiring.security;},get store(){return wiring.store;},get jobLifecycle(){return wiring.lifecycle;},get jobQueue(){return new AgentJobQueue(wiring.pool);},get eventStore(){return new AgentEventStore(wiring.pool);}}));
+vi.mock('./persistence',()=>({get approvals(){return new ApprovalStore(wiring.pool);},get pool(){return wiring.pool;},get security(){return wiring.security;},get store(){return wiring.store;},get jobLifecycle(){return wiring.lifecycle;},get jobQueue(){return new AgentJobQueue(wiring.pool);},get eventStore(){return new AgentEventStore(wiring.pool);}}));
+import { AgentRunner,AgentPaused,MockProvider } from '@eap/ai';
+import { createBusinessTools } from '@eap/tools';
+import { GET as approvalList } from '../app/api/approvals/route';
+import { GET as approvalDetail } from '../app/api/approvals/[id]/route';
+import { POST as approve } from '../app/api/approvals/[id]/approve/route';
+import { POST as reject } from '../app/api/approvals/[id]/reject/route';
+import { GET as recentRuns } from '../app/api/agent/runs/route';
 import { GET as getRun } from '../app/api/agent/runs/[id]/route';
 import { POST as cancel } from '../app/api/agent/runs/[id]/cancel/route';
 import { GET as sse } from '../app/api/agent/runs/[id]/events/route';
@@ -25,7 +32,7 @@ describe('protected API integration with real sessions and RLS',()=>{
  const req=(method='GET',tenant=a,body?:unknown,session=cookie)=>new Request(`${url}/api/test`,{method,headers:{Origin:url,Cookie:session,'x-tenant-id':tenant,'Content-Type':'application/json','Idempotency-Key':randomUUID()},body:method==='GET'?undefined:JSON.stringify(body??{})});
  const context=(id:string)=>({params:Promise.resolve({id})});
  beforeEach(async()=>{
-  vi.stubEnv('BETTER_AUTH_URL',url);db=await securityDatabase();
+  vi.stubEnv('AGENT_CHECKPOINT_KEY','22'.repeat(32));vi.stubEnv('BETTER_AUTH_URL',url);db=await securityDatabase();
   wiring.pool=db.app;wiring.security=new SecurityStore(db.app);wiring.store=new PersistenceStore(db.app);wiring.lifecycle=new JobLifecycle(db.app,wiring.security);
   const actual=await vi.importActual<typeof import('./auth')>('./auth');
   auth=actual.createAuth(db.auth,{secret:'test-only-secret-32-characters-for-api',url});wiring.auth.mockResolvedValue(auth);
@@ -36,6 +43,46 @@ describe('protected API integration with real sessions and RLS',()=>{
   b=(await withSecurityContext({actorUserId:'bob'},()=>wiring.security.createTenant('B'))).id;
  });
  afterEach(async()=>{vi.unstubAllEnvs();await db?.close();});
+ async function pendingApproval(){
+  await withSecurityContext({tenantId:a,actorUserId:actor},()=>wiring.security.setPolicy({tool_name:'get_high_risk_transactions',enabled:true,allowed_roles:['owner','admin','member'],risk_level:'low',requires_approval:true}));
+  const run=await withSecurityContext({tenantId:a,actorUserId:actor},()=>wiring.lifecycle.submit({requestKey:randomUUID(),messages:[{role:'user',content:'query'}]}));
+  const job=(await new AgentJobQueue(db.worker,true).claim('approval-api'))!;
+  await withSecurityContext({tenantId:a,actorUserId:actor},async()=>{
+   const runner=new AgentRunner({provider:new MockProvider(),tools:createBusinessTools({baseURL:'http://unused.test'}),beforeTool:async state=>{await new ApprovalStore(db.worker).pause(job,state);throw new AgentPaused();}});
+   for await(const event of runner.run({messages:[{role:'user',content:'query'}]}))void event;
+  });
+  return (await db.admin.query('SELECT id FROM agent_approvals WHERE run_id=$1',[run.id])).rows[0].id as string;
+ }
+ it('serves redacted approvals and commits one approved decision through authenticated routes',async()=>{
+  const id=await pendingApproval();expect((await approvalList(req())).status).toBe(200);
+  const detail=await approvalDetail(req(),context(id));expect(detail.status).toBe(200);const payload=await detail.json();expect(payload.approval.display_arguments.limit).toBe(3);expect(payload.approval.tool_arguments).toBeUndefined();
+  expect((await approve(req('POST',a,{reason:'checked'}),context(id))).status).toBe(200);
+  expect((await reject(req('POST',a,{reason:'late'}),context(id))).status).toBe(409);expect((await approve(req('POST',a,{reason:'duplicate'}),context(id))).status).toBe(409);
+ });
+ it('rejects a pending approval through HTTP and atomically terminates the original job',async()=>{
+  const id=await pendingApproval();const response=await reject(req('POST',a,{reason:'not allowed'}),context(id));expect(response.status).toBe(200);
+  const row=(await db.admin.query('SELECT status,run_id,job_id FROM agent_approvals WHERE id=$1',[id])).rows[0];expect(row.status).toBe('rejected');
+  expect((await db.admin.query('SELECT status FROM agent_runs WHERE id=$1',[row.run_id])).rows[0].status).toBe('failed');
+  expect((await db.admin.query('SELECT status FROM agent_jobs WHERE id=$1',[row.job_id])).rows[0].status).toBe('failed');
+  expect((await db.admin.query('SELECT * FROM tool_executions WHERE run_id=$1',[row.run_id])).rowCount).toBe(0);
+  expect((await approve(req('POST',a,{reason:'too late'}),context(id))).status).toBe(409);
+ });
+ it('protects approval routes with session, current role, RLS, origin and strict decision schema',async()=>{
+  const id=await pendingApproval();expect((await approvalList(req('GET',a,undefined,''))).status).toBe(401);
+  expect((await approve(req('POST',a,{reason:'x',tenant_id:b,approver_user_id:'bob'}),context(id))).status).toBe(400);
+  expect((await approve(req('POST',a,{reason:'x'.repeat(501)}),context(id))).status).toBe(400);
+  expect((await approvalDetail(req(),context(randomUUID()))).status).toBe(404);
+  const evil=new Request(`${url}/api/approvals/${id}/approve`,{method:'POST',headers:{Origin:'https://evil.test',Cookie:cookie,'x-tenant-id':a},body:'{}'});expect((await approve(evil,context(id))).status).toBe(403);
+  await db.admin.query("UPDATE tenant_memberships SET role='member' WHERE tenant_id=$1 AND user_id=$2",[a,actor]);
+  expect((await approvalList(req())).status).toBe(403);expect((await approve(req('POST',a,{}),context(id))).status).toBe(403);
+ });
+ it('lists recoverable runs only within the selected tenant, without job lease or checkpoint data',async()=>{
+  const own=await withSecurityContext({tenantId:a,actorUserId:actor},()=>wiring.lifecycle.submit({requestKey:randomUUID(),messages:[{role:'user',content:'own chat'}]}));
+  const foreign=await withSecurityContext({tenantId:b,actorUserId:'bob'},()=>wiring.lifecycle.submit({requestKey:randomUUID(),messages:[{role:'user',content:'foreign chat'}]}));
+  const response=await recentRuns(req());expect(response.status).toBe(200);const body=await response.json();expect(body.runs.map((r:{id:string})=>r.id)).toEqual([own.id]);
+  const json=JSON.stringify(body);expect(json).not.toContain(foreign.id);expect(json).not.toContain('lease_token');expect(json).not.toContain('checkpoint');
+  expect((await recentRuns(req('GET',a,undefined,''))).status).toBe(401);
+ });
  it('denies anonymous API access including both legacy stream paths',async()=>{
   for(const handler of [createConversation,submit,legacyAgent,legacyChat,legacyChatStream,changeMember,policy])expect((await handler(req('POST',a,{},''))).status).toBe(401);
   expect((await conversations(req('GET',a,undefined,''))).status).toBe(401);

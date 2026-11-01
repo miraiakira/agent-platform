@@ -45,6 +45,7 @@ export async function executeToolWithPolicy(
   args: string,
   options: {
     signal: AbortSignal;
+    context?: import("@eap/tools").ToolContext;
     budget: ExecutionBudget;
     remainingMs: () => number;
   },
@@ -82,7 +83,7 @@ export async function executeToolWithPolicy(
       });
       let result: unknown;
       try {
-        result = await Promise.race([registry.execute(name, args, { signal }), aborted]);
+        result = await Promise.race([registry.execute(name, args, { ...options.context, signal }), aborted]);
       } finally {
         if (onAbort) signal.removeEventListener("abort", onAbort);
       }

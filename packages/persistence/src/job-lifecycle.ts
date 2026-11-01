@@ -1,6 +1,8 @@
 import { injectTraceHeaders, metric, log } from "@eap/observability";
 import { SecurityStore } from "./security";
 import { securityContext } from "./security-context";
+import type { ApprovalGrant } from "./approvals";
+import { argumentsHash } from "./approval-crypto";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type { AgentRunRecord, SpanInput } from "./types";
@@ -53,7 +55,7 @@ export class JobLifecycle {
         await client.query("INSERT INTO conversations(id, title) VALUES ($1, $2)",
           [conversationId, input.messages.at(-1)?.content.slice(0, 80) ?? "New conversation"]);
       }
-      const active = await client.query("SELECT 1 FROM agent_runs WHERE conversation_id = $1 AND status IN ('pending','running')", [conversationId]);
+      const active = await client.query("SELECT 1 FROM agent_runs WHERE conversation_id = $1 AND status IN ('pending','running','waiting_approval')", [conversationId]);
       if (active.rowCount) throw new JobRequestError(409, "Conversation already has an active run");
       const messages = [{ role: "system", content: [
         "You are an enterprise risk analysis assistant.",
@@ -77,7 +79,8 @@ export class JobLifecycle {
     });
   }
 
-  async finalizeJob(input: JobFinalization): Promise<boolean> {
+  async finalizeJob(input: JobFinalization | {jobId:string;leaseToken:string;status:"waiting_approval"}): Promise<boolean> {
+    if(input.status==="waiting_approval") return false;
     let blockedRun = false;
     const finalized = await transaction(this.db, async (client) => {
       const job = await lockLease(client, input.jobId, input.leaseToken);
@@ -95,21 +98,24 @@ export class JobLifecycle {
       const finalError = blocked ? { code: "EXECUTION_OUTCOME_UNKNOWN", message: "Tool outcome requires reconciliation; automatic replay disabled" } : error;
       await client.query(
         `UPDATE agent_runs SET status=$2, output=$3::jsonb, error=$4::jsonb, finished_at=clock_timestamp(),
-         trace_id=COALESCE($5,trace_id), model_calls=$6, tool_calls=$7, input_tokens=$8, output_tokens=$9
+         trace_id=COALESCE($5,trace_id), model_calls=COALESCE($6,model_calls), tool_calls=COALESCE($7,tool_calls), input_tokens=COALESCE($8,input_tokens), output_tokens=COALESCE($9,output_tokens)
          WHERE id=$1`,
         [job.run_id, finalStatus, JSON.stringify({ answer: input.answer ?? "" }), JSON.stringify(finalError ?? null),
-          trace?.traceId ?? null, trace?.modelCalls ?? 0, trace?.toolCalls ?? 0, trace?.inputTokens ?? 0, trace?.outputTokens ?? 0],
+          trace?.traceId ?? null, trace?.modelCalls ?? null, trace?.toolCalls ?? null, trace?.inputTokens ?? null, trace?.outputTokens ?? null],
       );
       if (input.observability) {
         const o = input.observability;
         await client.query("UPDATE agent_runs SET observability=$2::jsonb WHERE id=$1", [job.run_id, JSON.stringify(o)]);
         await client.query(`INSERT INTO agent_usage(run_id,provider,model,input_tokens,output_tokens,usage_source,estimated_cost_usd,price)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(run_id) DO NOTHING`,
           [job.run_id,o.provider,o.model,o.inputTokens,o.outputTokens,o.usageSource,o.cost.usd,JSON.stringify(o.cost.price)]);
       }
+      if(!input.observability) await client.query(`INSERT INTO agent_usage(run_id,tenant_id,provider,model,input_tokens,output_tokens,usage_source,estimated_cost_usd,price)
+       SELECT id,tenant_id,observability->>'provider',observability->>'model',input_tokens,output_tokens,observability->>'usageSource',
+       (observability->'cost'->>'usd')::numeric,observability->'cost'->'price' FROM agent_runs WHERE id=$1 AND observability IS NOT NULL ON CONFLICT(run_id) DO NOTHING`,[job.run_id]);
       for (const [index, span] of (trace?.spans ?? []).entries()) await client.query(
         `INSERT INTO trace_spans(id,run_id,span_index,name,kind,status,duration_ms,data)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(run_id,span_index) DO UPDATE SET name=EXCLUDED.name,kind=EXCLUDED.kind,status=EXCLUDED.status,duration_ms=EXCLUDED.duration_ms,data=EXCLUDED.data`,
         [randomUUID(),job.run_id,index,span.name,span.kind,span.status,Math.round(span.durationMs ?? 0),JSON.stringify(span.data ?? {})],
       );
       if (finalStatus === "completed") await client.query(
@@ -137,15 +143,21 @@ export class JobLifecycle {
   }
 
   // Tool intent is committed before invoking any external effect. Never replay an existing intent.
-  async startTool(jobId: string, token: string, call: { id: string; name: string; arguments: string }) {
+  async startTool(jobId: string, token: string, call: { id: string; name: string; arguments: string }, approval?: ApprovalGrant) {
     return transaction(this.db, async (client) => {
       const job = await lockLease(client, jobId, token);
       if (!job || job.cancel_requested_at) return false;
+      if(approval) {
+        const consumed=await client.query(`UPDATE agent_approvals SET consumed_by_lease=$2 WHERE id=$1 AND job_id=$3 AND run_id=$4
+         AND tool_call_id=$5 AND tool_name=$6 AND tool_arguments_hash=$7 AND checkpoint_version=$8 AND status='approved'
+         AND consumed_by_lease IS NULL AND expires_at>clock_timestamp()`,[approval.id,token,job.id,job.run_id,call.id,call.name,argumentsHash(call.arguments),approval.checkpointVersion]);
+        if(consumed.rowCount!==1) return false;
+      }
       const key = `${job.run_id}:${call.id}`;
       const result = await client.query(
         `INSERT INTO tool_executions(id,run_id,tool_call_id,tool_name,idempotency_key,status,input,started_at)
          VALUES($1,$2,$3,$4,$5,'running',$6::jsonb,now()) ON CONFLICT DO NOTHING`,
-        [randomUUID(),job.run_id,call.id,call.name,key,JSON.stringify({ rawArguments: call.arguments })],
+        [randomUUID(),job.run_id,call.id,call.name,key,JSON.stringify(approval ? {approvalId:approval.id,argumentsHash:argumentsHash(call.arguments)} : { rawArguments: call.arguments })],
       );
       return result.rowCount === 1;
     });

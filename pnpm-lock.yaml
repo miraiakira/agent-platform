@@ -154,6 +154,9 @@ importers:
 
   packages/persistence:
     dependencies:
+      '@eap/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@eap/observability':
         specifier: workspace:*
         version: link:../observability

@@ -2,7 +2,7 @@ import { initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observabi
 import { randomUUID } from "node:crypto";
 import { createModelProvider } from "@eap/ai";
 import { createBusinessTools } from "@eap/tools";
-import { createRuntimePool, SecurityStore, AgentJobQueue, AgentEventStore, PersistenceStore, JobLifecycle } from "@eap/persistence";
+import { createRuntimePool, ApprovalStore, SecurityStore, AgentJobQueue, AgentEventStore, PersistenceStore, JobLifecycle } from "@eap/persistence";
 import { AgentExecutor } from "./executor";
 import { runWorker } from "./worker";
 
@@ -26,11 +26,12 @@ async function main() {
   try {
     await pool.query("SELECT 1");
     if(!process.env.BUSINESS_API_KEY || process.env.BUSINESS_API_KEY.length<32) throw new Error("BUSINESS_API_KEY (32+ characters) required");
+    const approvals = new ApprovalStore(pool);
     const lifecycle = new JobLifecycle(pool, security);
     await runWorker({
-      queue: new AgentJobQueue(pool, true), lifecycle,
-      executor: new AgentExecutor({ store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, security, provider, model: process.env.LLM_MODEL,
-        tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY, authorize: name => security.authorizeTool(name) }),
+      approvals, queue: new AgentJobQueue(pool, true), lifecycle,
+      executor: new AgentExecutor({ approvals, store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, security, provider, model: process.env.LLM_MODEL,
+        tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY, authorize: (name,args,context) => security.authorizeTool(name,args,context) }),
         maxDurationMs: positive("WORKER_MAX_DURATION_MS", 60_000),
       }),
       workerId: process.env.WORKER_ID ?? `agent-worker-${randomUUID()}`,

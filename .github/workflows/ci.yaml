@@ -10,6 +10,8 @@ jobs:
 
     # Migrations/test fixtures use the provisioner; runtime security tests create restricted logins.
     env:
+      # Test-only encryption key; never use this key outside CI fixtures.
+      AGENT_CHECKPOINT_KEY: "3333333333333333333333333333333333333333333333333333333333333333"
       DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
       BETTER_AUTH_URL: http://localhost:3551
       BETTER_AUTH_SECRET: ci-only-secret-32-characters-not-for-production
@@ -83,7 +85,7 @@ jobs:
       - name: Agent Worker Typecheck
         run: pnpm --filter @eap/agent-worker typecheck
 
-      - name: Agent Worker Lease and Security Integration Tests
+      - name: Agent Worker Lease, Security and Durable Approval Integration Tests
         run: pnpm --filter @eap/agent-worker test
 
       # ------------------------------------
@@ -96,7 +98,7 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @eap/web typecheck
 
-      - name: Web Streaming and Better Auth Integration Tests
+      - name: Web Streaming, Approval API and Better Auth Integration Tests
         run: pnpm --filter @eap/web test
 
       - name: Build

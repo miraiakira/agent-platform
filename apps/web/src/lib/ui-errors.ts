@@ -12,6 +12,11 @@ const labels: Record<string, string> = {
   DEADLINE_EXCEEDED: "任务执行超时，请稍后重试或缩小查询范围。",
   LEASE_LOST: "任务执行权已失效，请查看任务状态后再决定是否重试。",
   WORKER_STOPPED: "后台执行服务已停止，本次任务未能完成。",
+  APPROVAL_ALREADY_DECIDED: "此审批已被处理，请刷新列表。（409）",
+  APPROVAL_EXPIRED: "此审批已过期，任务已终止。",
+  SELF_APPROVAL_FORBIDDEN: "高风险操作需要其他所有者或管理员批准。",
+  APPROVAL_POLICY_CHANGED: "工具策略已变更，此审批无法继续，请重新提交任务。",
+  CHECKPOINT_MISMATCH: "恢复数据校验失败，已阻止执行。",
   NOT_FOUND: "资源不存在，或你没有访问权限。",
 };
 export function friendlyError(value: unknown, fallback = "操作未完成，请稍后重试。") {

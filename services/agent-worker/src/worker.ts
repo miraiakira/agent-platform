@@ -6,7 +6,7 @@ import type { AgentJobQueue, JobLifecycle, ClaimedJob } from "@eap/persistence";
 import type { JobExecutor, JobResult } from "./executor";
 
 export interface WorkerOptions {
-  queue: AgentJobQueue; lifecycle: JobLifecycle; executor: JobExecutor;
+  approvals?: import("@eap/persistence").ApprovalStore; queue: AgentJobQueue; lifecycle: JobLifecycle; executor: JobExecutor;
   workerId: string; signal: AbortSignal;
   concurrency?: number; leaseSeconds?: number; pollIntervalMs?: number;
   onError?: (error: unknown) => void;
@@ -73,6 +73,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
       await heartbeat;
       signal.removeEventListener("abort", stop);
     }
+    if(result.status==="waiting_approval") return undefined;
     // finalizeJob checks lease and cancellation under locks. Never infer user cancellation from generic abort.
     try {
       // A late shutdown/heartbeat cannot replace a terminal cause already returned
@@ -94,6 +95,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
   await Promise.all(Array.from({ length: concurrency }, async () => {
     while (!signal.aborted) {
       try {
+        await options.approvals?.expire();
         const blocked = await queue.blockExpiredJobs();
         if (blocked.length) metric("agent_worker_blocked_jobs_total",blocked.length);
         const claimStarted = Date.now();

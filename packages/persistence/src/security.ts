@@ -3,9 +3,11 @@ import type { Pool, PoolClient } from 'pg';
 import { currentTraceId, log } from '@eap/observability';
 import { securityContext, withSecurityContext, type SecurityContext } from './security-context';
 import { transaction } from './transaction';
+import { argumentsHash } from './approval-crypto';
+import type { ApprovalGrant } from './approvals';
 export const roles = ['owner','admin','member','viewer'] as const;
 export type Role = typeof roles[number];
-export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read'] as const;
+export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide'] as const;
 export type Permission = typeof permissions[number];
 const read: Permission[]=['conversation:read','agent:read'];
 const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute'];
@@ -89,7 +91,7 @@ export class SecurityStore {
   await c.query('UPDATE tenants SET status=$2 WHERE id=$1',[securityContext()?.tenantId,status]);
   await this.audit('tenant.change','tenant',securityContext()?.tenantId??null,'allow','STATUS_UPDATED',c);
  });}
- async authorizeTool(name:string) {
+ async authorizeTool(name:string,rawArguments?:string,context?:{approval?:ApprovalGrant}) {
   const ctx=securityContext();
   let role: Role | null;
   let policy: ToolPolicy | undefined;
@@ -102,11 +104,22 @@ export class SecurityStore {
    log('error','security.authorization_unavailable',{error_code:'AUTHORIZATION_UNAVAILABLE'});
    throw new SecurityError(503,'AUTHORIZATION_UNAVAILABLE');
   }
-  const allowed=!!role && rolePermissions[role].includes('tool:execute') && !!policy?.enabled && policy.allowed_roles.includes(role) && !policy.requires_approval;
+  let approved=false;
+  if(policy?.requires_approval && context?.approval && rawArguments){
+   const a=context.approval;
+   try {approved=!!(await this.db.query(`SELECT 1 FROM agent_approvals a JOIN agent_jobs j ON j.id=a.job_id JOIN tool_executions e ON e.run_id=a.run_id AND e.tool_call_id=a.tool_call_id
+    WHERE a.id=$1 AND a.tenant_id=$2 AND a.requested_by_user_id=$3 AND a.job_id=$4 AND a.tool_call_id=$5 AND a.tool_name=$6
+    AND a.tool_arguments_hash=$7 AND a.checkpoint_version=$8 AND a.policy_version=$9 AND a.status='approved' AND a.expires_at>clock_timestamp()
+    AND a.consumed_by_lease=$10 AND j.lease_token=$10 AND j.status='running' AND j.lease_expires_at>clock_timestamp() AND j.cancel_requested_at IS NULL AND e.status='running'`,
+    [a.id,ctx?.tenantId,ctx?.actorUserId,a.jobId,a.callId,name,argumentsHash(rawArguments),a.checkpointVersion,policy.policy_version,a.leaseToken])).rowCount;}
+   catch {throw new SecurityError(503,'AUTHORIZATION_UNAVAILABLE');}
+  }
+  const allowed=!!role && rolePermissions[role].includes('tool:execute') && !!policy?.enabled && policy.allowed_roles.includes(role) && (!policy.requires_approval || approved);
   // Deliberately fail closed for every tool, including read-only/low risk.
   // No name heuristic or implicit fail-open path can weaken a policy.
   try {
    await this.audit('tool.execute','tool',/^[a-z][a-z0-9_]{0,79}$/.test(name)?name:null,allowed?'allow':'deny',allowed?'POLICY_ALLOWED':'TOOL_FORBIDDEN');
+   if(!allowed && context?.approval) await this.audit('approval.execution_denied','approval',context.approval.id,'deny','TOOL_FORBIDDEN');
   } catch {
    log('error','security.audit_unavailable',{error_code:'AUDIT_UNAVAILABLE'});
    throw new SecurityError(503,'AUDIT_UNAVAILABLE');
@@ -132,7 +145,7 @@ export class SecurityStore {
   const ctx=securityContext();if(!ctx?.tenantId) throw new SecurityError(403,'FORBIDDEN');
   await client.query('SELECT id FROM tenants WHERE id=$1 FOR UPDATE',[ctx.tenantId]);
   await this.authorize('agent:execute',client);
-  const active=await client.query("SELECT 1 FROM agent_runs WHERE tenant_id=$1 AND status IN ('pending','running')",[ctx.tenantId]);
+  const active=await client.query("SELECT 1 FROM agent_runs WHERE tenant_id=$1 AND status IN ('pending','running','waiting_approval')",[ctx.tenantId]);
   if((active.rowCount??0)>=4) throw new SecurityError(429,'CONCURRENT_RUN_LIMIT',5);
  }
  async resourceDenied(type:string,id:string):Promise<never> {await this.audit('resource.access',type,id,'deny','RESOURCE_UNAVAILABLE');throw new SecurityError(404,'NOT_FOUND');}

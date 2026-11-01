@@ -40,6 +40,10 @@ export function runEventStream(options: {
           }
           const run = await options.store.getRun(options.runId);
           if (!run) break;
+          if (run.status === "waiting_approval") {
+            if ((await options.events.listAfter(options.runId, cursor, 1)).length) continue;
+            break;
+          }
           if (["completed", "failed", "cancelled", "interrupted"].includes(run.status)) {
             // Re-read after observing committed terminal state; drain all pages.
             if ((await options.events.listAfter(options.runId, cursor, 1)).length) continue;

@@ -1,4 +1,5 @@
 import {
+  ApprovalStore,
   createRuntimePool,
   SecurityStore,
   PersistenceStore,
@@ -25,3 +26,5 @@ export const jobQueue = new AgentJobQueue(pool);
 export const eventStore = new AgentEventStore(pool);
 export const security = new SecurityStore(pool);
 export const jobLifecycle = new JobLifecycle(pool, security);
+
+export const approvals = new ApprovalStore(pool);

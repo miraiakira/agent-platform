@@ -4,14 +4,17 @@ import { readSSE, type ChatStreamEvent } from "./sse";
 export async function* subscribeRun(url: string, signal: AbortSignal): AsyncGenerator<ChatStreamEvent> {
   let cursor = "0";
   let failures = 0;
+  let waiting = false;
   while (!signal.aborted) {
     try {
       const response = await fetch(url, { headers: { "Last-Event-ID": cursor }, signal });
       if (!response.ok || !response.body) throw new Error(`Subscription failed: ${response.status}`);
       for await (const event of readSSE(response.body, (id) => { cursor = id; failures = 0; })) {
+        if(event.type==="approval") waiting=event.status==="waiting_approval";
         yield event;
         if (event.type === "done" || event.type === "error") return;
       }
+      if(waiting)return;
       throw new Error("Subscription disconnected");
     } catch (error) {
       if (signal.aborted) return;

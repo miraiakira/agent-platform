@@ -19,6 +19,7 @@ const transitions: Record<RunStatus, RunStatus[]> = {
     "cancelled",
     "interrupted",
   ],
+  waiting_approval: [],
   completed: [],
   failed: [],
   cancelled: [],
@@ -161,6 +162,12 @@ export class PersistenceStore {
     );
 
     return result.rows[0] ?? null;
+  }
+
+  async listRecentJobs() {
+    return (await this.db.query(`SELECT r.id,r.conversation_id,r.status,r.created_at,c.title
+      FROM agent_runs r JOIN agent_jobs j ON j.run_id=r.id JOIN conversations c ON c.id=r.conversation_id
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 50`)).rows;
   }
 
   async listRuns(

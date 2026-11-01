@@ -11,6 +11,7 @@ const navigation: Array<{ href: string; label: string; caption: string; icon: Ic
   { href: "/", label: "工作空间", caption: "Overview", icon: "grid" },
   { href: "/agent", label: "风控 Agent", caption: "Risk analysis", icon: "agent" },
   { href: "/chat", label: "AI 对话", caption: "Assistant", icon: "chat" },
+  { href: "/approvals", label: "人工审批", caption: "Approvals", icon: "shield" },
   { href: "/security", label: "组织与权限", caption: "Organization", icon: "shield" },
 ];
 export function Brand({ compact = false }: { compact?: boolean }) {

@@ -1,11 +1,13 @@
 "use client";
 
-import { Alert, Button, Input, Select, Tag, Typography, message } from "antd";
+import { Alert, Button, Input, Select, Space, Tag, Typography, message } from "antd";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "./workspace-provider";
 import { Icon } from "./ui/icon";
 import { friendlyError, responseError } from "@/lib/ui-errors";
+import { loadPersistedAgentChat } from "@/lib/persisted-agent-chat";
 import { subscribeRun } from "@/lib/async-agent-client";
 
 import {
@@ -17,7 +19,7 @@ class StreamFailure extends Error {
   constructor(readonly code: string, text: string) { super(`${code}: ${text}`); }
 }
 
-const statusLabels: Record<string, string> = { Ready: "准备就绪", Generating: "正在分析", Queued: "等待执行", Completed: "已完成", Failed: "执行失败", Cancelled: "已取消", Cancelling: "正在取消" };
+const statusLabels: Record<string, string> = { WaitingApproval: "等待人工审批", Approved: "审批通过，等待执行", Ready: "准备就绪", Generating: "正在分析", Queued: "等待执行", Completed: "已完成", Failed: "执行失败", Cancelled: "已取消", Cancelling: "正在取消" };
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -30,11 +32,13 @@ type TokenUsage = Extract<
 >["usage"];
 
 export function ChatPanel({
-  endpoint = "/api/chat/stream",
+  endpoint = "/api/chat/stream", initialRunId,
 }: {
-  endpoint?: string;
+  endpoint?: string; initialRunId?:string;
 }) {
-  const { session, sessionPending, tenant, canExecute, tenantsPending } = useWorkspace();
+  const { session, sessionPending, tenant, canExecute, canManage, tenantsPending } = useWorkspace();
+  const router=useRouter();
+  const sessionUserId=session?.user.id,tenantId=tenant?.id;
   const [failure, setFailure] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [lastMode, setLastMode] = useState<"stream" | "async" | null>(null);
@@ -47,7 +51,7 @@ export function ChatPanel({
   const pendingSubmissionRef = useRef<{ key: string; body: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!!initialRunId);
   const [usage, setUsage] = useState<TokenUsage | null>(null);
   const [cost, setCost] = useState<{ usd: number | null; coverage: string } | null>(null);
   const [status, setStatus] = useState("Ready");
@@ -69,10 +73,47 @@ export function ChatPanel({
     if (scrollRef.current && followOutput.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, toolActivities]);
 
-  async function sendMessage() {
+  useEffect(()=>{
+    if(!initialRunId || !sessionUserId || !tenantId)return;
+    const controller=new AbortController();controllerRef.current=controller;
+    void (async()=>{
+      try{
+        const {run,messages:history,answer}=await loadPersistedAgentChat(initialRunId,controller.signal);
+        if(controller.signal.aborted)return;
+        conversationRef.current=run.conversation_id;runRef.current=run.id;
+        setLastRunId(run.id);setMode('async');setLastMode('async');setTraceId(run.trace_id);setModelIteration(run.model_calls);
+        setMessages([...history,{role:'assistant',content:answer}]);
+        setUsage({inputTokens:Number(run.input_tokens),outputTokens:Number(run.output_tokens),totalTokens:Number(run.input_tokens)+Number(run.output_tokens)});
+        setCost(run.observability?.cost?{usd:run.observability.cost.usd,coverage:run.observability.usageSource??'unavailable'}:null);
+        const terminal=['completed','failed','cancelled','interrupted'].includes(run.status);
+        setStatus(run.status==='waiting_approval'?'WaitingApproval':run.status==='completed'?'Completed':run.status==='cancelled'?'Cancelled':terminal?'Failed':'Queued');
+        if(terminal){runRef.current=undefined;if(run.error)setFailure(friendlyError(`${run.error.code??'AGENT_ERROR'}: ${run.error.message??'任务未完成'}`));return;}
+        setLoading(true);let text='';
+        for await(const event of subscribeRun(`/api/agent/runs/${run.id}/events`,controller.signal)){
+          if(controller.signal.aborted)return;
+          switch(event.type){
+            case 'text-delta':text+=event.text;setMessages([...history,{role:'assistant',content:text}]);break;
+            case 'approval':setStatus(event.status==='waiting_approval'?'WaitingApproval':event.status==='approved'?'Approved':event.status==='resumed'?'Generating':'Failed');break;
+            case 'run-start':setTraceId(event.traceId);setStatus('Generating');break;
+            case 'model-start':setModelIteration(event.iteration);break;
+            case 'tool-start':setToolActivities(old=>[...old.filter(a=>a.id!==event.toolCallId),{id:event.toolCallId,name:event.toolName,status:'running'}]);break;
+            case 'tool-result':setToolActivities(old=>old.map(a=>a.id===event.toolCallId?{...a,status:event.success?'success':'error'}:a));break;
+            case 'usage':setUsage(event.usage);break;
+            case 'trace':setTraceId(event.traceId);setUsage(event.usage);setCost(event.cost??null);break;
+            case 'done':setStatus('Completed');runRef.current=undefined;break;
+            case 'error':setStatus(event.code==='CANCELLED'?'Cancelled':'Failed');setFailure(friendlyError(`${event.code}: ${event.message}`));runRef.current=undefined;break;
+          }
+        }
+      }catch(error){if(!controller.signal.aborted){setFailure(friendlyError(error));setStatus('Failed');}}
+      finally{if(!controller.signal.aborted){setLoading(false);if(controllerRef.current===controller)controllerRef.current=null;}}
+    })();
+    return()=>controller.abort();
+  },[initialRunId,sessionUserId,tenantId]);
+
+  async function sendMessage(resumeRunId?:string) {
     const content = input.trim();
 
-    if (!content || loading || !session || !tenant || !canExecute) return;
+    if ((!content && !resumeRunId) || loading || !session || !tenant || (!canExecute && !resumeRunId)) return;
     setTraceId(null);
     setModelIteration(0);
     setLastRunId(null);
@@ -81,11 +122,11 @@ export function ChatPanel({
     setToolActivities([]);
     followOutput.current = true;
 
-    const previousMessages = messages;
+    const previousMessages = resumeRunId ? messages.slice(0,-1) : messages;
 
     const nextMessages: ChatMessage[] = [
       ...previousMessages,
-      { role: "user", content },
+      ...(resumeRunId ? [] : [{ role: "user" as const, content }]),
     ];
 
     // Create a placeholder for streaming text.
@@ -105,10 +146,15 @@ export function ChatPanel({
 
     let receivedText = "";
     let completed = false;
+    let redirected = false;
+    let paused = false;
 
     try {
       let events: AsyncIterable<ChatStreamEvent>;
-      if (mode === "async" && endpoint === "/api/agent/stream") {
+      if(resumeRunId){
+        runRef.current=resumeRunId;setLastRunId(resumeRunId);
+        events=subscribeRun(`/api/agent/runs/${resumeRunId}/events`,controller.signal);
+      } else if (mode === "async" && endpoint === "/api/agent/stream") {
         const body = JSON.stringify({ conversationId: conversationRef.current, messages: nextMessages });
         if (pendingSubmissionRef.current?.body !== body) {
           pendingSubmissionRef.current = { key: crypto.randomUUID(), body };
@@ -130,7 +176,9 @@ export function ChatPanel({
         runRef.current = job.runId;
         setLastRunId(job.runId);
         setStatus("Queued");
-        events = subscribeRun(job.eventsUrl, controller.signal);
+        router.replace(`/agent?run=${encodeURIComponent(job.runId)}`,{scroll:false});
+        redirected=true;
+        return;
       } else {
         const response = await fetch(endpoint, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -145,6 +193,10 @@ export function ChatPanel({
         if (controller.signal.aborted) break;
 
         switch (event.type) {
+          case "approval":
+            paused=event.status==="waiting_approval";
+            setStatus(event.status === "waiting_approval" ? "WaitingApproval" : event.status === "approved" ? "Approved" : event.status === "resumed" ? "Generating" : "Failed");
+            break;
           case "text-delta":
             receivedText += event.text;
 
@@ -214,7 +266,7 @@ export function ChatPanel({
         if (completed) break;
       }
 
-      if (!completed && !controller.signal.aborted) {
+      if (!completed && !paused && !controller.signal.aborted) {
         throw new Error("Stream ended without done event");
       }
     } catch (error) {
@@ -228,7 +280,8 @@ export function ChatPanel({
         messageApi.error(reason);
       }
     } finally {
-      if (!completed) {
+      if(!redirected){ // The keyed persisted view takes over after navigation.
+      if (!completed && !paused) {
         if (receivedText) {
           // Preserve partial output but do not reuse it as
           // completed conversation context.
@@ -240,11 +293,12 @@ export function ChatPanel({
         }
       }
 
-      runRef.current = undefined;
+      if(!paused)runRef.current = undefined;
       controllerRef.current = null;
       setLoading(false);
       setCancelling(false);
       if (!completed) setToolActivities(previous => previous.map(activity => activity.status === "running" ? { ...activity, status: "interrupted" } : activity));
+      }
     }
   }
 
@@ -256,6 +310,7 @@ export function ChatPanel({
     {contextHolder}
     <section className="surface chat-workspace" aria-label={isAgentMode ? "Agent 分析会话" : "AI 对话会话"}>
       <div className="chat-toolbar"><div className="chat-toolbar-title"><span className="chat-toolbar-icon"><Icon name={isAgentMode ? "agent" : "chat"} size={18}/></span><strong>{isAgentMode ? "业务分析会话" : "与 AI 对话"}</strong><span className={`status-pill ${statusClass}`} role="status"><span/>{statusLabels[status] ?? status}</span></div><Button type="text" size="small" icon={<Icon name="plus" size={16}/>} disabled={loading || messages.length === 0} onClick={() => {
+        if(endpoint==="/api/agent/stream" && initialRunId){router.push("/agent");return;}
         setMessages([]); setInput(""); setFailure(""); setUsage(null); setCost(null); setToolActivities([]); setTraceId(null); setLastRunId(null); setLastMode(null); setModelIteration(0); setStatus("Ready"); conversationRef.current = undefined; pendingSubmissionRef.current = null;
       }}>新会话</Button></div>
       {isAgentMode && <div className="execution-mode-row"><label id="execution-mode-label">执行方式</label><Select aria-labelledby="execution-mode-label" aria-label="Execution mode" value={mode} disabled={loading} onChange={setMode} options={[{ value: "stream", label: "实时执行 · Stream" }, { value: "async", label: "后台任务 · Async" }]} className="execution-mode-select"/><span>{mode === "async" ? "任务在后台执行，断开连接不会自动取消。" : "实时接收分析与工具执行结果。"}</span></div>}
@@ -264,7 +319,7 @@ export function ChatPanel({
         {messages.length === 0 ? <div className="chat-empty"><span className="chat-empty-mark"><Icon name={isAgentMode ? "agent" : "chat"} size={35}/></span><span className="eyebrow">{isAgentMode ? "FROM QUESTION TO INSIGHT" : "A LITTLE SPACE TO THINK"}</span><h2>{isAgentMode ? "今天，想了解哪些风险？" : "有什么想一起思考的？"}</h2><p>{isAgentMode ? "提出你的问题，Agent 会结合业务工具开展分析。" : "写下一个问题，或从下面的灵感开始。"}</p><div className="suggestion-list">{prompts.map(prompt => <button type="button" key={prompt} disabled={!ready} onClick={() => setInput(prompt)}><span>{prompt}</span><Icon name="arrow" size={15}/></button>)}</div></div> : <div className="message-list">{messages.map((item, index) => <article key={index} className={`message-row message-${item.role}`}><span className={`message-avatar ${item.role === "user" ? "message-avatar-user" : ""}`}>{item.role === "user" ? (session?.user.name || "你").slice(0, 1).toUpperCase() : <Icon name="agent" size={17}/>}</span><div className="message-content"><span className="message-author">{item.role === "user" ? "你" : isAgentMode ? "风控 Agent" : "AI 助手"}</span><div className="message-bubble">{item.content || (loading ? <span className="thinking-indicator"><i/><i/><i/><span>{status === "Queued" ? "等待后台执行…" : "正在思考…"}</span></span> : "")}</div></div></article>)}</div>}
       </div>
       {failure && <div className="chat-error"><Alert showIcon type="error" title="本次回复未完成" description={failure} closable onClose={() => setFailure("")}/></div>}
-      <div className="composer"><Input.TextArea aria-label="消息内容" value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} placeholder={!session ? "登录后开始对话" : !tenant ? "选择组织后开始对话" : isAgentMode ? "描述你想查询的交易或风险问题…" : "输入你的问题…"} disabled={loading || !ready} maxLength={8000} autoSize={{ minRows: 2, maxRows: 6 }} variant="borderless"/><div className="composer-bottom"><span>{loading ? status === "Queued" ? "等待任务执行，请确认 Worker 已启动。" : "正在接收回复…" : "Enter 发送 · Shift + Enter 换行"}</span><div className="composer-actions"><small>{input.length > 0 ? `${input.length.toLocaleString()} / 8,000` : ""}</small>{loading ? <Button danger loading={cancelling} icon={<Icon name="stop" size={15}/>} onClick={async () => {
+      {status === "WaitingApproval" && <Alert type="info" title="任务已持久化暂停，等待管理员审批。" description={<Space>{canManage ? <a href="/approvals" target="_blank" rel="noreferrer">打开人工审批</a> : <span>请联系组织所有者或管理员处理。</span>}<Button disabled={loading || !lastRunId} onClick={()=>void sendMessage(lastRunId??undefined)}>查看执行进度</Button><Button danger disabled={loading || !lastRunId} onClick={async()=>{const r=await fetch(`/api/agent/runs/${lastRunId}/cancel`,{method:"POST"});if(r.ok)void sendMessage(lastRunId??undefined);else setFailure(await responseError(r));}}>取消任务</Button></Space>}/>}<div className="composer"><Input.TextArea aria-label="消息内容" value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); } }} placeholder={!session ? "登录后开始对话" : !tenant ? "选择组织后开始对话" : isAgentMode ? "描述你想查询的交易或风险问题…" : "输入你的问题…"} disabled={loading || !ready} maxLength={8000} autoSize={{ minRows: 2, maxRows: 6 }} variant="borderless"/><div className="composer-bottom"><span>{loading ? status === "Queued" ? "等待任务执行，请确认 Worker 已启动。" : "正在接收回复…" : "Enter 发送 · Shift + Enter 换行"}</span><div className="composer-actions"><small>{input.length > 0 ? `${input.length.toLocaleString()} / 8,000` : ""}</small>{loading ? <Button danger loading={cancelling} icon={<Icon name="stop" size={15}/>} onClick={async () => {
         const runId = runRef.current;
         if (mode === "async" && runId) {
           setCancelling(true);

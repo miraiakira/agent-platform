@@ -8,6 +8,7 @@ export interface ToolDefinition {
 
 export interface ToolContext {
   signal?: AbortSignal;
+  approval?: { id: string; jobId: string; leaseToken: string; callId: string; checkpointVersion: number; hash: string };
   authorization?: { tenantId: string; actorUserId: string; policyVersion: number };
 }
 
@@ -43,10 +44,10 @@ function beforeExecutionError(code: string, message: string) {
 }
 
 export class ToolRegistry {
-  constructor(private readonly authorize?: (name: string) => Promise<NonNullable<ToolContext["authorization"]>>) {}
-  private async authorization(name: string) {
+  constructor(private readonly authorize?: (name: string, argumentsJson: string, context: ToolContext) => Promise<NonNullable<ToolContext["authorization"]>>) {}
+  private async authorization(name: string, argumentsJson: string, context: ToolContext) {
     if (!this.authorize) throw beforeExecutionError("TOOL_FORBIDDEN", "Tool authorization is required");
-    try { return await this.authorize(name); }
+    try { return await this.authorize(name, argumentsJson, context); }
     catch (error) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
       const known = typeof code === "string" && ["TOOL_FORBIDDEN", "AUDIT_UNAVAILABLE", "AUTHORIZATION_UNAVAILABLE"].includes(code);
@@ -69,6 +70,10 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  validCall(name:string,rawArguments:string):boolean {
+    const tool=this.tools.get(name);if(!tool)return false;
+    try{return tool.schema.safeParse(JSON.parse(rawArguments)).success;}catch{return false;}
+  }
   isRetrySafe(name: string): boolean {
     return this.tools.get(name)?.retrySafe === true;
   }
@@ -89,7 +94,7 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
 
     if (!tool) {
-      if (this.authorize) await this.authorization(name);
+      if (this.authorize) await this.authorization(name, rawArguments, context);
       throw beforeExecutionError(
         "UNKNOWN_TOOL",
         `Unknown tool: ${name}`,
@@ -120,7 +125,7 @@ export class ToolRegistry {
       );
     }
 
-    const authorization = await this.authorization(name);
+    const authorization = await this.authorization(name, rawArguments, context);
     if (context.signal?.aborted) throw beforeExecutionError("CANCELLED", "Tool cancelled");
     return tool.execute(result.data, { ...context, authorization });
   }

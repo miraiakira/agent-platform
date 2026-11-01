@@ -7,6 +7,7 @@ import { insertEvent } from "./transaction";
 export type JobStatus =
   | "queued"
   | "running"
+  | "waiting_approval"
   | "completed"
   | "failed"
   | "cancelled"
@@ -17,6 +18,8 @@ export interface AgentJob {
   actor_user_id?: string | null;
   authorization_context?: unknown;
   policy_version?: number;
+  checkpoint_version?: number;
+  active_approval_id?: string | null;
   trace_context?: Record<string,string>;
   id: string;
   run_id: string;
@@ -179,6 +182,12 @@ export class AgentJobQueue {
     try {
       await client.query("BEGIN");
 
+      const waiting=(await client.query<AgentJob>("SELECT * FROM agent_jobs WHERE run_id=$1 FOR UPDATE",[runId])).rows[0];
+      if(waiting?.status==='waiting_approval'){
+        await client.query('SELECT id FROM agent_runs WHERE id=$1 FOR UPDATE',[runId]);
+        await client.query("SELECT eap_cancel_waiting_approval($1)",[runId]);
+        await client.query('COMMIT');return true;
+      }
       const result = await client.query<AgentJob>(
         `UPDATE agent_jobs
          SET cancel_requested_at = now(),

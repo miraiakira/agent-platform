@@ -42,6 +42,18 @@ describe("observability contract", () => {
   expect(lines.join()).not.toContain("secret"); expect(lines.join()).not.toContain("private");
  });
  it("does not fail when a log sink throws", async () => { setup(()=>{throw new Error("disk failed")}); expect(()=>log("info","test.event")).not.toThrow(); });
+ it("records approval counters, seconds histogram and an absolute pending gauge without IDs",async()=>{
+  const {reader,metrics}=setup();
+  metric('agent_approvals_requested_total',1,{approval_id:'must-not-appear',run_id:'never'});
+  metric('agent_approvals_decided_total',1,{status:'approved',user_id:'never'});
+  metric('agent_approval_wait_duration_seconds',2);
+  metric('agent_approvals_pending',3);metric('agent_approvals_pending',1);
+  await reader.forceFlush();const data=metrics.getMetrics().flatMap(r=>r.scopeMetrics.flatMap(s=>s.metrics));
+  expect(data.find(m=>m.descriptor.name==='agent_approvals_pending')?.dataPoints[0].value).toBe(1);
+  expect(data.find(m=>m.descriptor.name==='agent_approval_wait_duration_seconds')?.descriptor.unit).toBe('s');
+  expect(data.find(m=>m.descriptor.name==='agent_approvals_requested_total')?.descriptor.unit).toBe('1');
+  expect(JSON.stringify(data)).not.toContain('must-not-appear');expect(JSON.stringify(data)).not.toContain('never');
+ });
  it("records model usage only once per request and rejects high-cardinality labels", async () => {
   const {reader,metrics} = setup();
   for await (const _event of observeModelStream(async function*(){
