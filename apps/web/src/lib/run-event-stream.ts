@@ -19,6 +19,7 @@ export function runEventStream(options: {
   events: Pick<AgentEventStore, "listAfter">;
   store: Pick<PersistenceStore, "getRun">;
   pollMs?: number;
+  authorize?: () => Promise<void>;
 }) {
   const local = new AbortController();
   const signal = AbortSignal.any([options.signal, local.signal]);
@@ -30,6 +31,7 @@ export function runEventStream(options: {
       let cursor = options.cursor;
       try {
         while (!signal.aborted) {
+          await options.authorize?.();
           const events = await options.events.listAfter(options.runId, cursor, 100);
           if (signal.aborted) break;
           for (const event of events) {

@@ -331,7 +331,7 @@ describe("DeepSeek streamed tool argument regression", () => {
       .mockResolvedValueOnce(chatStream([{ content: "No high-risk transactions found" }], "stop"));
     vi.stubGlobal("fetch", modelFetch);
     const businessFetch = vi.fn(async () => Response.json({ items: [], total: 0 }));
-    const tools = createBusinessTools({ baseURL: "http://business.test", fetchImpl: businessFetch });
+    const tools = createBusinessTools({ authorize: async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }), baseURL: "http://business.test", fetchImpl: businessFetch });
     const runner = new AgentRunner({ provider: new DeepSeekProvider(config), tools, budget: { maxModelCalls: 5 } });
     const events = [];
     for await (const event of runner.run({ messages })) events.push(event);

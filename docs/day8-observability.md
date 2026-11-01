@@ -322,3 +322,6 @@ docker compose -f compose.yaml -f compose.observability-local.yaml --profile obs
 - Collector 指向不可用端口的 fault smoke：Agent 完成、Worker 有界关闭、Usage snapshot 通过。
 
 Smoke 使用 MockProvider，没有调用真实 DeepSeek，也没有验证供应商账单。尚未触发远端 GitHub Actions；本地检查通过不代表远端 CI 已执行。SDK ready 不保证网络可达，任意永久挂起的第三方清理仍需进程重启；失败或未耗尽流的 Metrics 不代表供应商实际计费量。
+
+
+Day 9 升级后，请先按照 [安全启动文档](day9-security-multitenancy.md) 配置分离的数据库身份和 BUSINESS_API_KEY，并完整重启 Web/Worker；旧匿名请求和管理员 DATABASE_URL 不再可用于业务运行。观测栈本身仍使用上述 Day 8 配置。

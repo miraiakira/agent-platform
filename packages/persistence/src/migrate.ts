@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { createPool } from "./db";
 
-const pool = createPool();
+const pool = createPool(process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL);
 
 const migrationDir = fileURLToPath(
   new URL("../migrations/", import.meta.url),

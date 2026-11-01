@@ -1,3 +1,4 @@
+import { protectedApi } from "@/lib/security";
 import { log, errorCode } from "@eap/observability";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -19,7 +20,7 @@ const requestSchema = z.object({
   messages: z.array(messageSchema).min(1).max(20),
 });
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   try {
     const body: unknown = await request.json();
     const parsed = requestSchema.safeParse(body);
@@ -144,4 +145,8 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+export async function POST(request: Request) {
+ return protectedApi(request,"agent:execute",()=>handlePOST(request));
 }

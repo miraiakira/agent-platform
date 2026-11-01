@@ -8,6 +8,7 @@ export interface ToolDefinition {
 
 export interface ToolContext {
   signal?: AbortSignal;
+  authorization?: { tenantId: string; actorUserId: string; policyVersion: number };
 }
 
 export interface Tool<T extends z.ZodTypeAny> {
@@ -34,6 +35,7 @@ export class ToolError extends Error {
 }
 
 export class ToolRegistry {
+  constructor(private readonly authorize?: (name: string) => Promise<NonNullable<ToolContext["authorization"]>>) {}
   private readonly tools = new Map<
     string,
     Tool<z.ZodTypeAny>
@@ -70,6 +72,7 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
 
     if (!tool) {
+      if (this.authorize) await this.authorize(name);
       throw new ToolError(
         "UNKNOWN_TOOL",
         `Unknown tool: ${name}`,
@@ -100,6 +103,8 @@ export class ToolRegistry {
       );
     }
 
-    return tool.execute(result.data, context);
+    if (!this.authorize) throw new ToolError("TOOL_FORBIDDEN", "Tool authorization is required");
+    const authorization = await this.authorize(name);
+    return tool.execute(result.data, { ...context, authorization });
   }
 }

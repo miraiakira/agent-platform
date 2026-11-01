@@ -7,6 +7,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       ADDR: ":8080"
+      BUSINESS_API_KEY: ${BUSINESS_API_KEY:?Set BUSINESS_API_KEY to a random 32+ character service secret}
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf

@@ -8,9 +8,12 @@ jobs:
   frontend:
     runs-on: ubuntu-24.04
 
-    # Day 6: PostgreSQL 环境变量
+    # Migrations/test fixtures use the provisioner; runtime security tests create restricted logins.
     env:
       DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
+      BETTER_AUTH_URL: http://localhost:3551
+      BETTER_AUTH_SECRET: ci-only-secret-32-characters-not-for-production
+      BUSINESS_API_KEY: ci-only-service-secret-32-characters-not-for-production
       TEST_DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
 
     # Day 6: PostgreSQL Service
@@ -74,13 +77,13 @@ jobs:
       - name: Database Migration
         run: pnpm --filter @eap/persistence db:migrate
 
-      - name: Persistence Integration Tests
+      - name: Persistence and PostgreSQL RLS Security Tests
         run: pnpm --filter @eap/persistence test
         
       - name: Agent Worker Typecheck
         run: pnpm --filter @eap/agent-worker typecheck
 
-      - name: Agent Worker Integration Tests
+      - name: Agent Worker Lease and Security Integration Tests
         run: pnpm --filter @eap/agent-worker test
 
       # ------------------------------------
@@ -93,7 +96,7 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @eap/web typecheck
 
-      - name: Web Streaming Tests
+      - name: Web Streaming and Better Auth Integration Tests
         run: pnpm --filter @eap/web test
 
       - name: Build

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ToolRegistry } from "../src";
 
 function createRegistry() {
-  const registry = new ToolRegistry();
+  const registry = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
   const execute = vi.fn(async (input: { limit: number }) => ({
     count: input.limit,
   }));
@@ -103,4 +103,10 @@ describe("ToolRegistry", () => {
 
     expect(execute).not.toHaveBeenCalled();
   });
+});
+it('denies execution without an authorizer even when callers forge an authorization context',async()=>{
+ const registry=new ToolRegistry();const execute=vi.fn(async()=>true);
+ registry.register({name:'protected_tool',description:'protected',parameters:{},schema:z.object({}).strict(),execute});
+ await expect(registry.execute('protected_tool','{}',{authorization:{tenantId:'forged',actorUserId:'forged',policyVersion:999}})).rejects.toMatchObject({code:'TOOL_FORBIDDEN'});
+ expect(execute).not.toHaveBeenCalled();
 });

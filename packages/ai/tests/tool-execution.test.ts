@@ -22,7 +22,7 @@ function registryWith(
   execute: () => Promise<unknown>,
   retrySafe = true,
 ) {
-  const registry = new ToolRegistry();
+  const registry = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
 
   registry.register({
     name: "test",

@@ -1,4 +1,6 @@
 import { injectTraceHeaders, metric } from "@eap/observability";
+import { SecurityStore } from "./security";
+import { securityContext } from "./security-context";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type { AgentRunRecord, SpanInput } from "./types";
@@ -26,12 +28,12 @@ export interface JobFinalization {
 }
 
 export class JobLifecycle {
-  constructor(private readonly db: Pool) {}
+  constructor(private readonly db: Pool, private readonly security?: SecurityStore) {}
 
   async submit(input: JobSubmission): Promise<AgentRunRecord> {
     return transaction(this.db, async (client) => {
       // Serialize the same idempotency key, including requests creating a new conversation.
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.requestKey]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${securityContext()?.tenantId ?? "legacy"}:${input.requestKey}`]);
       const payload = JSON.stringify({ conversationId: input.conversationId ?? null, messages: input.messages });
       const existing = await client.query<AgentRunRecord & { matches: boolean }>(
         "SELECT *, request_payload = $2::jsonb AS matches FROM agent_runs WHERE request_key = $1",
@@ -41,6 +43,7 @@ export class JobLifecycle {
         if (!existing.rows[0].matches) throw new JobRequestError(409, "Idempotency key already used for a different request");
         return existing.rows[0];
       }
+      if (this.security) await this.security.guardSubmission(client);
       let conversationId = input.conversationId;
       if (conversationId) {
         const conversation = await client.query("SELECT id FROM conversations WHERE id = $1 FOR UPDATE", [conversationId]);
@@ -152,7 +155,7 @@ export class JobLifecycle {
     return transaction(this.db, async (client) => {
       const job = await lockLease(client, jobId, token);
       if (!job || job.cancel_requested_at) return false;
-      const unknown = !result.success && !["INVALID_ARGUMENTS", "UNKNOWN_TOOL"].includes(result.errorCode ?? "");
+      const unknown = !result.success && !["INVALID_ARGUMENTS", "UNKNOWN_TOOL", "TOOL_FORBIDDEN"].includes(result.errorCode ?? "");
       const updated = await client.query(
         `UPDATE tool_executions SET status=$3,output=$4::jsonb,finished_at=now()
          WHERE run_id=$1 AND tool_call_id=$2 AND status='running'`,

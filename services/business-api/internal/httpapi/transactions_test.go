@@ -9,6 +9,7 @@ import (
 )
 
 func TestHighRiskTransactions(t *testing.T) {
+	t.Setenv("BUSINESS_API_KEY", "test-only-business-api-key-32-chars")
 	date := time.Now().UTC().Format("2006-01-02")
 
 	req := httptest.NewRequest(
@@ -18,6 +19,9 @@ func TestHighRiskTransactions(t *testing.T) {
 	)
 
 	rec := httptest.NewRecorder()
+	req.Header.Set("Authorization", "Bearer test-only-business-api-key-32-chars")
+	req.Header.Set("X-Eap-Tenant-Id", "00000000-0000-0000-0000-000000000001")
+	req.Header.Set("X-Eap-Actor-Id", "test-actor")
 	NewHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -44,6 +48,7 @@ func TestHighRiskTransactions(t *testing.T) {
 }
 
 func TestHighRiskTransactionsRejectsInvalidLimit(t *testing.T) {
+	t.Setenv("BUSINESS_API_KEY", "test-only-business-api-key-32-chars")
 	req := httptest.NewRequest(
 		http.MethodGet,
 		"/api/transactions/high-risk?date=2026-10-28&limit=100",
@@ -51,6 +56,9 @@ func TestHighRiskTransactionsRejectsInvalidLimit(t *testing.T) {
 	)
 
 	rec := httptest.NewRecorder()
+	req.Header.Set("Authorization", "Bearer test-only-business-api-key-32-chars")
+	req.Header.Set("X-Eap-Tenant-Id", "00000000-0000-0000-0000-000000000001")
+	req.Header.Set("X-Eap-Actor-Id", "test-actor")
 	NewHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {

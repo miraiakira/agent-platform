@@ -19,7 +19,7 @@ export async function createTestDatabase() {
     for (const name of (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort()) {
       await pool.query(await readFile(new URL(name, dir), "utf8"));
     }
-    return { pool, close };
+    return { pool, close, schema };
   } catch (error) {
     await close();
     throw error;

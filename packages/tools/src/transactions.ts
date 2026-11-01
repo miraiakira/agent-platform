@@ -28,9 +28,10 @@ const responseSchema = z.object({
 export function createBusinessTools(config: {
   baseURL: string;
   apiKey?: string;
+  authorize?: ConstructorParameters<typeof ToolRegistry>[0];
   fetchImpl?: typeof fetch;
 }): ToolRegistry {
-  const registry = new ToolRegistry();
+  const registry = new ToolRegistry(config.authorize);
   const fetchImpl = config.fetchImpl ?? fetch;
 
   registry.register({
@@ -69,7 +70,7 @@ export function createBusinessTools(config: {
 
       try {
         const response = await fetchImpl(url, {
-          headers: { ...injectTraceHeaders(), ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
+          headers: { ...injectTraceHeaders(), ...(context.authorization ? { "X-Eap-Tenant-Id": context.authorization.tenantId, "X-Eap-Actor-Id": context.authorization.actorUserId } : {}), ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
           signal: context.signal,
         });
 

@@ -16,6 +16,10 @@ import (
 func main() { os.Exit(run()) }
 
 func run() int {
+	if len(os.Getenv("BUSINESS_API_KEY")) < 32 {
+		telemetry.Event(context.Background(), "server.configuration_failed", "BUSINESS_API_KEY_REQUIRED")
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	shutdownTelemetry := telemetry.Init(ctx)

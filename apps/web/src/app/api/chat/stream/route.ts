@@ -1,3 +1,4 @@
+import { protectedApi } from "@/lib/security";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -24,7 +25,7 @@ const requestSchema = z.object({
     .max(20),
 });
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   let body: unknown;
 
   try {
@@ -192,4 +193,7 @@ export async function POST(request: Request) {
       "X-Accel-Buffering": "no",
     },
   });
+}
+export async function POST(request: Request) {
+ return protectedApi(request,"agent:execute",()=>handlePOST(request));
 }

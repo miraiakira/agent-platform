@@ -1,6 +1,7 @@
 import { inSpan, startSpan, extractTraceContext, withIdentity, metric, log, errorCode } from "@eap/observability";
 import { RuntimeError } from "@eap/ai";
 import { setTimeout as delay } from "node:timers/promises";
+import { withSecurityContext, SecurityError } from "@eap/persistence";
 import type { AgentJobQueue, JobLifecycle, ClaimedJob } from "@eap/persistence";
 import type { JobExecutor, JobResult } from "./executor";
 
@@ -64,7 +65,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
     } catch (error) {
       report(error);
       const reason = controller.signal.aborted ? controller.signal.reason : error;
-      result = { status: "failed", error: reason instanceof RuntimeError
+      result = { status: "failed", error: reason instanceof RuntimeError || reason instanceof SecurityError
         ? { code: reason.code, message: reason.message }
         : { code: "WORKER_ERROR", message: "Worker execution interrupted" } };
     } finally {
@@ -107,7 +108,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
           const span = startSpan("agent.job.execute", { "agent.run_id": job.run_id, "agent.job_id": job.id }, extractTraceContext(job.trace_context));
           let outcome: string | undefined;
           try {
-            outcome = await withIdentity({ run_id: job.run_id, job_id: job.id, worker_id: workerId }, () => span.run(() => execute(job)));
+            outcome = await withIdentity({ run_id: job.run_id, job_id: job.id, worker_id: workerId }, () => span.run(() => job.tenant_id && job.actor_user_id ? withSecurityContext({tenantId:job.tenant_id,actorUserId:job.actor_user_id},()=>execute(job)) : execute(job)));
           } finally { span.end(outcome); metric("agent_worker_active_jobs",-1); }
         }
         else await pause();

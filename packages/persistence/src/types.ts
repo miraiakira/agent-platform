@@ -21,6 +21,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export interface Conversation {
+  tenant_id?: string;
   id: string;
   title: string;
   created_at: Date;
@@ -37,6 +38,8 @@ export interface StoredMessage {
 }
 
 export interface AgentRunRecord {
+  tenant_id?: string;
+  actor_user_id?: string | null;
   id: string;
   conversation_id: string;
   trace_id: string;

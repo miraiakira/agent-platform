@@ -57,8 +57,8 @@ describe("real Agent worker integration", () => {
     await shutdownTelemetry();
   });
   const submit = () => lifecycle.submit({ requestKey: crypto.randomUUID(), messages: [{ role: "user", content: "查询高风险交易" }] });
-  function executor(provider = new MockProvider(), tools = new ToolRegistry()) {
-    return new AgentExecutor({ store, events, lifecycle, provider, tools });
+  function executor(provider = new MockProvider(), tools = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }))) {
+    return new AgentExecutor({ security: { validateJob: async () => {} }, store, events, lifecycle, provider, tools });
   }
   function start(exec: JobExecutor, concurrency = 1) {
     const stop = new AbortController();
@@ -71,7 +71,7 @@ describe("real Agent worker integration", () => {
 
   it("runs MockProvider and real ToolRegistry, persists answer, trace, usage and exactly one terminal event", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ items: [], total: 0 }));
-    const tools = createBusinessTools({ baseURL: "http://business.test", fetchImpl });
+    const tools = createBusinessTools({ authorize: async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }), baseURL: "http://business.test", fetchImpl });
     const run = await submit();
     start(executor(new MockProvider(), tools));
     await until(async () => (await store.getRun(run.id))?.status === "completed");
@@ -101,7 +101,7 @@ describe("real Agent worker integration", () => {
     const queued = (await queue.getJobByRunId(run.id))!;
     expect(queued.trace_context?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => Response.json({ items: [], total: 0 }));
-    const worker = start(executor(new MockProvider(), createBusinessTools({ baseURL: "http://business.test", fetchImpl })));
+    const worker = start(executor(new MockProvider(), createBusinessTools({ authorize: async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }), baseURL: "http://business.test", fetchImpl })));
     await until(async () => (await store.getRun(run.id))?.status === "completed");
     worker.stop.abort(); await worker.running;
     const finished = spans.getFinishedSpans();
@@ -159,14 +159,14 @@ describe("real Agent worker integration", () => {
 
   it("enforces the global AgentRunner deadline", async () => {
     const run = await submit();
-    start(new AgentExecutor({ store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(), maxDurationMs: 20 }));
+    start(new AgentExecutor({ security: { validateJob: async () => {} }, store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 })), maxDurationMs: 20 }));
     await until(async () => (await store.getRun(run.id))?.status === "failed");
     expect((await store.getRun(run.id))?.error).toMatchObject({ code: "DEADLINE_EXCEEDED" });
   });
 
   it("does not overwrite a completed deadline result with a later worker shutdown", async () => {
     const run = await submit();
-    const real = new AgentExecutor({ store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(), maxDurationMs: 20 });
+    const real = new AgentExecutor({ security: { validateJob: async () => {} }, store, events, lifecycle, provider: new WaitingProvider(), tools: new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 })), maxDurationMs: 20 });
     let code: string | undefined;
     const worker = start({ async execute(job, signal) {
       const result = await real.execute(job, signal);
@@ -259,7 +259,7 @@ describe("real Agent worker integration", () => {
   });
 
   it("never retries or replays an unknown side-effect tool result", async () => {
-    const tools = new ToolRegistry();
+    const tools = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
     const execute = vi.fn(async () => { throw new ToolError("UPSTREAM_ERROR", "Transfer response lost after dispatch"); });
     tools.register({ name: "get_high_risk_transactions", description: "Unsafe test tool", retrySafe: false,
       schema: z.object({ date: z.string(), limit: z.number() }), parameters: {}, execute });

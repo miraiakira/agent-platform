@@ -13,7 +13,7 @@ import type {
 
 describe("AgentRunner", () => {
   it("executes a tool and returns the final answer", async () => {
-    const registry = new ToolRegistry();
+    const registry = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
 
     const execute = vi.fn(async () => ({
       items: [{ id: "TX-1001", risk_score: 95 }],
@@ -159,7 +159,7 @@ describe("AgentRunner", () => {
   });
 
   it("stops after the maximum model calls", async () => {
-    const registry = new ToolRegistry();
+    const registry = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
 
     const execute = vi.fn(async () => ({
       ok: true,

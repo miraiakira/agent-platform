@@ -1,3 +1,4 @@
+import { SessionBar } from "@/components/security-panel";
 import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { Suspense } from "react";
@@ -23,7 +24,7 @@ export default function RootLayout({
             </main>
           }
         >
-          <AntdRegistry>{children}</AntdRegistry>
+          <AntdRegistry><SessionBar />{children}</AntdRegistry>
         </Suspense>
       </body>
     </html>

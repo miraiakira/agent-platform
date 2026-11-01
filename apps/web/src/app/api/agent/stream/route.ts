@@ -1,3 +1,4 @@
+import { protectedApi } from "@/lib/security";
 import { log, errorCode } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -10,7 +11,10 @@ import {
 } from "@eap/ai";
 
 import { createBusinessTools } from "@eap/tools";
-import { store } from "@/lib/persistence";
+import { SecurityError, securityContext } from "@eap/persistence";
+import { ToolError } from "@eap/tools";
+import { security } from "@/lib/persistence";
+import { store, pool } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,7 +103,8 @@ function normalizeTrace(trace: TraceData) {
   };
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
+  await security.limit(`job:${securityContext()?.tenantId}:${securityContext()?.actorUserId}`,20,60);
   let body: unknown;
 
   try {
@@ -161,6 +166,7 @@ export async function POST(request: Request) {
       conversationId = conversation.id;
     }
   } catch (error) {
+    if(error instanceof SecurityError) throw error;
     log("error", "agent.execution_failed", { error_code: errorCode(error) });
 
     return Response.json(
@@ -177,6 +183,8 @@ export async function POST(request: Request) {
   });
 
   const tools = createBusinessTools({
+    apiKey: process.env.BUSINESS_API_KEY,
+    authorize: async name => { try { return await security.authorizeTool(name); } catch(error) { if(error instanceof SecurityError) throw new ToolError("TOOL_FORBIDDEN", "Tool denied"); throw error; } },
     baseURL:
       process.env.BUSINESS_API_URL ??
       "http://127.0.0.1:8080",
@@ -245,11 +253,19 @@ export async function POST(request: Request) {
   let runId: string;
 
   try {
-    const run = await store.createRun({
+    const client = await pool.connect();
+    let run;
+    try {
+      await client.query("BEGIN");
+      await security.guardSubmission(client);
+      const scopedStore = new (await import("@eap/persistence")).PersistenceStore({query:client.query.bind(client)} as typeof pool);
+      run = await scopedStore.createRun({
       conversationId,
       traceId: randomUUID(),
       messages,
-    });
+      });
+      await client.query("COMMIT");
+    } catch(error) { await client.query("ROLLBACK"); throw error; } finally {client.release();}
 
     runId = run.id;
 
@@ -266,6 +282,7 @@ export async function POST(request: Request) {
       });
     }
   } catch (error) {
+    if(error instanceof SecurityError) throw error;
     log("error", "agent.execution_failed", { error_code: errorCode(error) });
 
     request.signal.removeEventListener("abort", abort);
@@ -487,4 +504,7 @@ export async function POST(request: Request) {
       "X-Agent-Run-Id": runId,
     },
   });
+}
+export async function POST(request: Request) {
+ return protectedApi(request,"agent:execute",()=>handlePOST(request));
 }

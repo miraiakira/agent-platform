@@ -19,7 +19,7 @@ func NewHandler() http.Handler {
 
 	mux.HandleFunc(
 		"GET /api/transactions/high-risk",
-		highRiskTransactionsHandler,
+		requireService(highRiskTransactionsHandler),
 	)
 
 	return telemetry.HTTP(mux, otel.Tracer("eap-business-api"))

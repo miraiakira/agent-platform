@@ -16,7 +16,7 @@ import type {
 } from "../src/types";
 
 function makeTools() {
-  const registry = new ToolRegistry();
+  const registry = new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 }));
   const execute = vi.fn(async () => ({
     items: [{ id: "TX-1001", risk_score: 95 }],
   }));

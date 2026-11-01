@@ -2,8 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import assert from "node:assert/strict";
 import { initTelemetry, shutdownTelemetry, inSpan } from "@eap/observability";
-import { JobLifecycle, PersistenceStore } from "@eap/persistence";
-import { createTestDatabase } from "../../../packages/persistence/tests/database";
+import { JobLifecycle, PersistenceStore, SecurityStore, withSecurityContext } from "@eap/persistence";
+import { securityDatabase } from "../../../packages/persistence/tests/security-database";
 
 async function waitFor<T>(read: () => Promise<T>, accept: (value:T)=>boolean, timeoutMs = 20_000): Promise<T> {
   const until = Date.now()+timeoutMs;
@@ -27,30 +27,34 @@ async function stop(child: ChildProcess) {
 }
 let stage = "database.setup";
 async function main() {
-  const database = await createTestDatabase();
+  const database = await securityDatabase();
   let worker: ChildProcess | undefined;
   initTelemetry({service:"eap-web-smoke",enabled:true});
   try {
-    const store = new PersistenceStore(database.pool);
-    const lifecycle = new JobLifecycle(database.pool);
-    const run = await inSpan("agent.job.submit",{},()=>lifecycle.submit({requestKey:crypto.randomUUID(),messages:[{role:"user",content:"query risk"}]}));
-    const schema = (await database.pool.query("SELECT current_schema() AS name")).rows[0].name;
+    const store = new PersistenceStore(database.app);
+    const security = new SecurityStore(database.app);
+    const lifecycle = new JobLifecycle(database.app,security);
+    await database.auth.query('INSERT INTO "user"(id,name,email) VALUES(\'smoke\',\'Smoke\',\'smoke@example.test\')');
+    const tenant = await withSecurityContext({actorUserId:"smoke"},()=>security.createTenant("Smoke"));
+    const scope = <T>(fn:()=>T)=>withSecurityContext({tenantId:tenant.id,actorUserId:"smoke"},fn);
+    const run = await inSpan("agent.job.submit",{},()=>scope(()=>lifecycle.submit({requestKey:crypto.randomUUID(),messages:[{role:"user",content:"query risk"}]})));
+    const schema = database.schema;
     worker = spawn(process.execPath,["--import",import.meta.resolve("tsx"),"src/index.ts"],{
       cwd: new URL("../",import.meta.url), stdio:["ignore","pipe","pipe"],
-      env:{...process.env,DATABASE_URL:process.env.TEST_DATABASE_URL,PGOPTIONS:`-c search_path=${schema}`,
+      env:{...process.env,DATABASE_URL:database.connectionString,PGOPTIONS:`-c search_path=${schema}`,
         OTEL_ENABLED:"true",LLM_PROVIDER:"mock",WORKER_POLL_INTERVAL_MS:"20"},
     });
     // Drain child logs without echoing arbitrary process diagnostics or business data.
     worker.stdout?.resume(); worker.stderr?.resume();
     stage = "worker.execute";
-    const result = await waitFor(()=>store.getRun(run.id),(r)=>r?.status==="completed");
+    const result = await waitFor(()=>scope(()=>store.getRun(run.id)),(r)=>r?.status==="completed");
     const metadata=result!.observability as {otelTraceId:string};
     assert.match(metadata.otelTraceId,/^[a-f0-9]{32}$/);
     stage = "worker.shutdown";
     await stop(worker); worker=undefined;
     await shutdownTelemetry();
     if (process.env.OBSERVABILITY_FAULT_TEST === "true") {
-      const summary=await store.usageByModel(); assert.equal(summary[0].total_tokens,"80");
+      const summary=await scope(()=>store.usageByModel()); assert.equal(summary[0].total_tokens,"80");
       console.log(JSON.stringify({runId:run.id,collectorUnavailable:"Agent still completed",workerShutdown:"bounded",usageSnapshot:"passed"}));
       return;
     }
@@ -82,7 +86,7 @@ async function main() {
       const response=await get(`/api/datasources/proxy/uid/prometheus/api/v1/query?query=${encodeURIComponent(expr)}`);
       assert.equal(response.status,"success",`Invalid Dashboard PromQL: ${expr}`);
     }
-    const summary=await store.usageByModel(); assert.equal(summary[0].total_tokens,"80");
+    const summary=await scope(()=>store.usageByModel()); assert.equal(summary[0].total_tokens,"80");
     console.log(JSON.stringify({runId:run.id,otelTraceId:metadata.otelTraceId,trace:"passed (including Go)",metrics:"passed",logs:"passed",dashboard:"provisioned",workerShutdown:"passed",usageSnapshot:"passed"}));
   } finally {
     if(worker) await stop(worker);

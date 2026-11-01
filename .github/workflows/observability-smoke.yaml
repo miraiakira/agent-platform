@@ -6,6 +6,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      BUSINESS_API_KEY: smoke-only-service-key-32-characters-not-for-production
       OTEL_ENABLED: 'true'
       GRAFANA_URL: http://127.0.0.1:3300
       OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318

@@ -13,6 +13,10 @@ export type JobStatus =
   | "blocked";
 
 export interface AgentJob {
+  tenant_id?: string;
+  actor_user_id?: string | null;
+  authorization_context?: unknown;
+  policy_version?: number;
   trace_context?: Record<string,string>;
   id: string;
   run_id: string;
@@ -36,7 +40,7 @@ export interface ClaimedJob extends AgentJob {
 }
 
 export class AgentJobQueue {
-  constructor(private readonly db: Pool) {}
+  constructor(private readonly db: Pool, private readonly securedWorker = false) {}
 
   async enqueue(input: {
     runId: string;
@@ -70,6 +74,7 @@ export class AgentJobQueue {
     }
 
     const token = randomUUID();
+    if (this.securedWorker) return (await this.db.query<ClaimedJob>("SELECT * FROM eap_claim_job($1,$2,$3)", [workerId,token,leaseSeconds])).rows[0] ?? null;
 
     const client = await this.db.connect();
 
@@ -228,6 +233,7 @@ export class AgentJobQueue {
   }
 
   async blockExpiredJobs(): Promise<string[]> {
+    if (this.securedWorker) return (await this.db.query<{id:string}>("SELECT eap_reap_jobs() AS id")).rows.map(r=>r.id);
     const client = await this.db.connect();
 
     try {

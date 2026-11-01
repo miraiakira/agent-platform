@@ -1,9 +1,10 @@
+import { protectedApi } from "@/lib/security";
 import { NextRequest, NextResponse } from "next/server";
 import { store } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+async function handleGET() {
   try {
     const conversations =
       await store.listConversations();
@@ -19,7 +20,7 @@ export async function GET() {
   }
 }
 
-export async function POST(
+async function handlePOST(
   request: NextRequest,
 ) {
   try {
@@ -66,4 +67,11 @@ export async function POST(
       { status: 500 },
     );
   }
+}
+export async function GET(request: Request) {
+ return protectedApi(request,"conversation:read",()=>handleGET());
+}
+
+export async function POST(request: Request) {
+ return protectedApi(request,"conversation:create",()=>handlePOST(request as Parameters<typeof handlePOST>[0]));
 }

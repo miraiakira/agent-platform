@@ -15,7 +15,7 @@ function waitingRun(parent?: AbortSignal) {
       yield { type: "model-finish", finishReason: "stop" };
     }
   }
-  const runner = new AgentRunner({ provider: new WaitingProvider(), tools: new ToolRegistry(), budget: { maxDurationMs: 20 } });
+  const runner = new AgentRunner({ provider: new WaitingProvider(), tools: new ToolRegistry(async () => ({ tenantId: "test-tenant", actorUserId: "test-actor", policyVersion: 1 })), budget: { maxDurationMs: 20 } });
   const result = (async () => {
     const events: StreamEvent[] = [];
     for await (const event of runner.run({ messages: [{ role: "user", content: "hello" }], signal: parent })) events.push(event);

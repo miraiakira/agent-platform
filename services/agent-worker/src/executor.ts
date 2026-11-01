@@ -1,7 +1,7 @@
 import { estimateCost, currentTraceId } from "@eap/observability";
 import { AgentRunner, type AgentMessage, type ExecutionTrace, type ModelProvider, type StreamEvent, RuntimeError } from "@eap/ai";
 import type { ToolRegistry } from "@eap/tools";
-import { AgentEventStore, JobLifecycle, PersistenceStore, type ClaimedJob, type JobFinalization } from "@eap/persistence";
+import { AgentEventStore, JobLifecycle, PersistenceStore, type ClaimedJob, type SecurityStore, type JobFinalization } from "@eap/persistence";
 
 export type JobResult = Omit<JobFinalization, "jobId" | "leaseToken">;
 export interface JobExecutor {
@@ -11,7 +11,7 @@ export interface JobExecutor {
 export class AgentExecutor implements JobExecutor {
   constructor(private readonly options: {
     store: PersistenceStore; events: AgentEventStore; lifecycle: JobLifecycle;
-    provider: ModelProvider; model?: string; tools: ToolRegistry; maxDurationMs?: number;
+    security: Pick<SecurityStore, "validateJob">; provider: ModelProvider; model?: string; tools: ToolRegistry; maxDurationMs?: number;
   }) {}
 
   async execute(job: ClaimedJob, signal: AbortSignal): Promise<JobResult> {
@@ -22,6 +22,7 @@ export class AgentExecutor implements JobExecutor {
       ["system", "user", "assistant"].includes(String(m.role)) && typeof m.content === "string")) {
       throw new Error("Invalid persisted run input");
     }
+    await this.options.security.validateJob(job,run);
     let trace: ExecutionTrace | undefined;
     const runner = new AgentRunner({
       provider, tools, model: this.options.model,
