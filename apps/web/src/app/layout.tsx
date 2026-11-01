@@ -1,4 +1,5 @@
-import { SessionBar } from "@/components/security-panel";
+import { AppProviders } from "@/components/app-providers";
+import { AppShell } from "@/components/app-shell";
 import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { Suspense } from "react";
@@ -16,7 +17,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen bg-slate-50">
+      <body>
         <Suspense
           fallback={
             <main className="mx-auto min-h-screen max-w-6xl p-6 md:p-10">
@@ -24,7 +25,7 @@ export default function RootLayout({
             </main>
           }
         >
-          <AntdRegistry><SessionBar />{children}</AntdRegistry>
+          <AntdRegistry><AppProviders><AppShell>{children}</AppShell></AppProviders></AntdRegistry>
         </Suspense>
       </body>
     </html>
