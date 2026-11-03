@@ -1,0 +1,331 @@
+{
+  "schema_version": 1,
+  "name": "Enterprise Risk Regression",
+  "description": "Deterministic isolated AgentRunner cases; no real business API",
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "high-risk-query",
+      "name": "high-risk-query",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [
+          {
+            "name": "get_high_risk_transactions",
+            "arguments": {
+              "date": "2026-01-01",
+              "limit": 3
+            }
+          }
+        ]
+      },
+      "expected_output": "风险分析完成",
+      "expected_tool_calls": [
+        "get_high_risk_transactions"
+      ],
+      "expected_tool_arguments": [
+        {
+          "name": "get_high_risk_transactions",
+          "arguments": {
+            "date": "2026-01-01",
+            "limit": 3
+          }
+        }
+      ],
+      "scoring_rules": [
+        {
+          "scorer": "exact_match"
+        },
+        {
+          "scorer": "tool_selection"
+        },
+        {
+          "scorer": "tool_arguments"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "risk"
+      ]
+    },
+    {
+      "case_id": "invalid-tool-arguments",
+      "name": "invalid-tool-arguments",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [
+          {
+            "name": "get_high_risk_transactions",
+            "arguments": {
+              "date": "2026-01-01",
+              "limit": 999
+            }
+          }
+        ]
+      },
+      "expected_output": "风险分析完成",
+      "expected_tool_calls": [
+        "get_high_risk_transactions"
+      ],
+      "expected_tool_arguments": [
+        {
+          "name": "get_high_risk_transactions",
+          "arguments": {
+            "date": "2026-01-01",
+            "limit": 999
+          }
+        }
+      ],
+      "scoring_rules": [
+        {
+          "scorer": "exact_match"
+        },
+        {
+          "scorer": "tool_selection"
+        },
+        {
+          "scorer": "tool_arguments"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "validation"
+      ],
+      "expected_security_behavior": "denied"
+    },
+    {
+      "case_id": "unknown-tool-rejected",
+      "name": "unknown-tool-rejected",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [
+          {
+            "name": "unknown_tool",
+            "arguments": {
+              "date": "2026-01-01",
+              "limit": 3
+            }
+          }
+        ]
+      },
+      "expected_output": "风险分析完成",
+      "expected_tool_calls": [
+        "unknown_tool"
+      ],
+      "expected_tool_arguments": [
+        {
+          "name": "unknown_tool",
+          "arguments": {
+            "date": "2026-01-01",
+            "limit": 3
+          }
+        }
+      ],
+      "scoring_rules": [
+        {
+          "scorer": "exact_match"
+        },
+        {
+          "scorer": "tool_selection"
+        },
+        {
+          "scorer": "tool_arguments"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "security"
+      ],
+      "expected_security_behavior": "denied"
+    },
+    {
+      "case_id": "high-risk-approval",
+      "name": "high-risk-approval",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [
+          {
+            "name": "get_high_risk_transactions",
+            "arguments": {
+              "date": "2026-01-01",
+              "limit": 3
+            }
+          }
+        ],
+        "approval": "pending"
+      },
+      "expected_output": "",
+      "expected_tool_calls": [
+        "get_high_risk_transactions"
+      ],
+      "expected_tool_arguments": [
+        {
+          "name": "get_high_risk_transactions",
+          "arguments": {
+            "date": "2026-01-01",
+            "limit": 3
+          }
+        }
+      ],
+      "scoring_rules": [
+        {
+          "scorer": "exact_match"
+        },
+        {
+          "scorer": "tool_selection"
+        },
+        {
+          "scorer": "tool_arguments"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "approval",
+        "security"
+      ],
+      "expected_approval_behavior": "pending"
+    },
+    {
+      "case_id": "tenant-isolation",
+      "name": "tenant-isolation",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [
+          {
+            "name": "get_high_risk_transactions",
+            "arguments": {
+              "date": "2026-01-01",
+              "limit": 3
+            }
+          }
+        ],
+        "authorization": "cross_tenant"
+      },
+      "expected_output": "风险分析完成",
+      "expected_tool_calls": [
+        "get_high_risk_transactions"
+      ],
+      "expected_tool_arguments": [
+        {
+          "name": "get_high_risk_transactions",
+          "arguments": {
+            "date": "2026-01-01",
+            "limit": 3
+          }
+        }
+      ],
+      "scoring_rules": [
+        {
+          "scorer": "exact_match"
+        },
+        {
+          "scorer": "tool_selection"
+        },
+        {
+          "scorer": "tool_arguments"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "security",
+        "tenant"
+      ],
+      "expected_security_behavior": "tenant_isolated"
+    },
+    {
+      "case_id": "deadline-handling",
+      "name": "deadline-handling",
+      "input_messages": [
+        {
+          "role": "user",
+          "content": "查询风险高的交易"
+        }
+      ],
+      "fixture": {
+        "calls": [],
+        "stall": true
+      },
+      "expected_output": "",
+      "expected_tool_calls": [],
+      "expected_tool_arguments": [],
+      "scoring_rules": [
+        {
+          "scorer": "error_code"
+        },
+        {
+          "scorer": "security_behavior",
+          "hard": true
+        },
+        {
+          "scorer": "approval_compliance",
+          "hard": true
+        }
+      ],
+      "tags": [
+        "deadline",
+        "security"
+      ],
+      "expected_error_code": "DEADLINE_EXCEEDED"
+    }
+  ]
+}

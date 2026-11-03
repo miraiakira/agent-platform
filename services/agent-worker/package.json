@@ -14,7 +14,8 @@
     "@eap/ai": "workspace:*",
     "@eap/tools": "workspace:*",
     "@eap/persistence": "workspace:*",
-    "@eap/observability": "workspace:*"
+    "@eap/observability": "workspace:*",
+    "@eap/evaluation": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,4 +1,5 @@
 import { initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observability";
+import { runEvaluationWorker } from "@eap/evaluation";
 import { randomUUID } from "node:crypto";
 import { createModelProvider } from "@eap/ai";
 import { createBusinessTools } from "@eap/tools";
@@ -28,7 +29,7 @@ async function main() {
     if(!process.env.BUSINESS_API_KEY || process.env.BUSINESS_API_KEY.length<32) throw new Error("BUSINESS_API_KEY (32+ characters) required");
     const approvals = new ApprovalStore(pool);
     const lifecycle = new JobLifecycle(pool, security);
-    await runWorker({
+    await Promise.all([runEvaluationWorker({db:pool,workerId:`eval-${process.pid}`,signal:shutdown.signal}),runWorker({
       approvals, queue: new AgentJobQueue(pool, true), lifecycle,
       executor: new AgentExecutor({ approvals, store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, security, provider, model: process.env.LLM_MODEL,
         tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY, authorize: (name,args,context) => security.authorizeTool(name,args,context) }),
@@ -39,8 +40,9 @@ async function main() {
       concurrency: positive("WORKER_CONCURRENCY", 1),
       leaseSeconds: positive("WORKER_LEASE_SECONDS", 30),
       pollIntervalMs: positive("WORKER_POLL_INTERVAL_MS", 1000),
-    });
+    })]);
   } finally {
+    shutdown.abort();
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGINT", stop);
     try { await pool.end(); } finally { await shutdownTelemetry(); }

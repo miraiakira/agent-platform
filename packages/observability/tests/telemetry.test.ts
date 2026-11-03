@@ -4,7 +4,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { InMemoryMetricExporter, PeriodicExportingMetricReader, AggregationTemporality } from "@opentelemetry/sdk-metrics";
 import { initTelemetry, shutdownTelemetry, startSpan, injectTraceHeaders, extractTraceContext, inSpan, log, metric,
-  observeModelStream, estimateCost, loadPrices, observeOperation, withIdentity, getTelemetryState } from "../src";
+  observeModelStream, estimateCost, loadPrices, observeOperation, withIdentity, withEvaluationTelemetry, getTelemetryState } from "../src";
 
 afterEach(async () => { await shutdownTelemetry(); vi.unstubAllEnvs(); });
 function setup(sink = (_line:string) => {}) {
@@ -53,6 +53,10 @@ describe("observability contract", () => {
   expect(data.find(m=>m.descriptor.name==='agent_approval_wait_duration_seconds')?.descriptor.unit).toBe('s');
   expect(data.find(m=>m.descriptor.name==='agent_approvals_requested_total')?.descriptor.unit).toBe('1');
   expect(JSON.stringify(data)).not.toContain('must-not-appear');expect(JSON.stringify(data)).not.toContain('never');
+ });
+ it("records bounded evaluation metrics without Eval Run or User labels",async()=>{
+  const {reader,metrics}=setup();withEvaluationTelemetry(()=>{metric('agent_runs_total',1);metric('agent_model_tokens_total',999);});metric('agent_eval_runs_total',1,{provider:'mock',model:'mock-model',dataset_version:'1',eval_run_id:'private-eval',user_id:'private-user'});metric('agent_eval_case_duration_seconds',.02);metric('agent_eval_score',.8);metric('agent_eval_regressions_total',1);metric('agent_eval_gate_failures_total',1);await reader.forceFlush();
+  const data=metrics.getMetrics().flatMap(r=>r.scopeMetrics.flatMap(s=>s.metrics));expect(data.find(m=>m.descriptor.name==='agent_eval_score')?.dataPoints[0].value).toBe(.8);expect(data.find(m=>m.descriptor.name==='agent_eval_case_duration_seconds')?.descriptor.unit).toBe('s');expect(JSON.stringify(data)).not.toContain('private-eval');expect(JSON.stringify(data)).not.toContain('private-user');expect(data.some(m=>m.descriptor.name==='agent_runs_total'||m.descriptor.name==='agent_model_tokens_total')).toBe(false);
  });
  it("records model usage only once per request and rejects high-cardinality labels", async () => {
   const {reader,metrics} = setup();

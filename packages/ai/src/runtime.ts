@@ -156,7 +156,8 @@ export function combineSignals(
   parent: AbortSignal,
   timeoutMs: number,
 ) {
-  const timeout = AbortSignal.timeout(timeoutMs);
+  // Remaining performance-clock time can be fractional; Node requires integer milliseconds.
+  const timeout = AbortSignal.timeout(Math.max(0, Math.floor(timeoutMs)));
 
   return AbortSignal.any([parent, timeout]);
 }

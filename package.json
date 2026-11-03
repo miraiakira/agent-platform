@@ -7,9 +7,12 @@
     "dev": "pnpm --parallel --filter @eap/web --filter @eap/business-api dev",
     "build": "pnpm --filter @eap/web build && pnpm --filter @eap/business-api build",
     "lint": "pnpm --filter @eap/web lint && pnpm --filter @eap/business-api lint",
-    "typecheck": "pnpm --filter @eap/observability typecheck && pnpm --filter @eap/tools typecheck && pnpm --filter @eap/ai typecheck && pnpm --filter @eap/persistence typecheck && pnpm --filter @eap/agent-worker typecheck && pnpm --filter @eap/web typecheck",
-    "test": "pnpm --filter @eap/observability test && pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/persistence test && pnpm --filter @eap/agent-worker test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
-    "test:observability": "pnpm --filter @eap/agent-worker smoke:observability"
+    "typecheck": "pnpm --filter @eap/evaluation typecheck && pnpm --filter @eap/observability typecheck && pnpm --filter @eap/tools typecheck && pnpm --filter @eap/ai typecheck && pnpm --filter @eap/persistence typecheck && pnpm --filter @eap/agent-worker typecheck && pnpm --filter @eap/web typecheck",
+    "test": "pnpm --filter @eap/evaluation test && pnpm --filter @eap/observability test && pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/persistence test && pnpm --filter @eap/agent-worker test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json",
+    "test:observability": "pnpm --filter @eap/agent-worker smoke:observability",
+    "eval:run": "pnpm --filter @eap/evaluation cli run",
+    "eval:compare": "pnpm --filter @eap/evaluation cli compare",
+    "eval:report": "pnpm --filter @eap/evaluation cli report"
   }
 }

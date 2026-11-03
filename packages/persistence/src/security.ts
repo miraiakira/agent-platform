@@ -7,7 +7,7 @@ import { argumentsHash } from './approval-crypto';
 import type { ApprovalGrant } from './approvals';
 export const roles = ['owner','admin','member','viewer'] as const;
 export type Role = typeof roles[number];
-export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide'] as const;
+export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide','evaluation:read','evaluation:manage','evaluation:run'] as const;
 export type Permission = typeof permissions[number];
 const read: Permission[]=['conversation:read','agent:read'];
 const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute'];

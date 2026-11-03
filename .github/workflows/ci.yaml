@@ -12,6 +12,8 @@ jobs:
     env:
       # Test-only encryption key; never use this key outside CI fixtures.
       AGENT_CHECKPOINT_KEY: "3333333333333333333333333333333333333333333333333333333333333333"
+      EVAL_ALLOW_EXTERNAL: "false"
+      EVAL_ALLOW_JUDGE: "false"
       DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
       BETTER_AUTH_URL: http://localhost:3551
       BETTER_AUTH_SECRET: ci-only-secret-32-characters-not-for-production
@@ -87,6 +89,20 @@ jobs:
 
       - name: Agent Worker Lease, Security and Durable Approval Integration Tests
         run: pnpm --filter @eap/agent-worker test
+
+      - name: Evaluation Typecheck and Tests
+        run: pnpm --filter @eap/evaluation typecheck && pnpm --filter @eap/evaluation test
+
+      - name: Deterministic Agent Quality Gate
+        run: pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json --out artifacts/evaluation
+
+      - name: Preserve Evaluation Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-agent-evaluation
+          path: artifacts/evaluation/
+          if-no-files-found: warn
 
       # ------------------------------------
       # Next.js Web

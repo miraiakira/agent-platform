@@ -15,7 +15,7 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { estimateCost } from "./cost";
 export * from "./cost";
 
-type Identity = { run_id?: string; job_id?: string; worker_id?: string };
+type Identity = { run_id?: string; job_id?: string; worker_id?: string; evaluation?: boolean };
 export type TelemetryPhase = "idle" | "initializing" | "disabled" | "ready" | "failed" | "shutting-down";
 type Sdk = { tracer: NodeTracerProvider; meter: MeterProvider; logs?: LoggerProvider };
 type Cleanup = () => Promise<void>;
@@ -150,8 +150,9 @@ export async function shutdownTelemetry(timeoutMs = 2000) {
 }
 export function currentTraceId() { const id = trace.getSpan(activeContext())?.spanContext().traceId; return id && id !== "00000000000000000000000000000000" ? id : undefined; }
 export function activeContext() { return state.manager.active(); }
+export function withEvaluationTelemetry<T>(fn:()=>T):T { return state.identity.run({...state.identity.getStore(),evaluation:true},fn); }
 export function withIdentity<T>(identity: Identity, fn: () => T): T { return state.identity.run(identity, fn); }
-const allowedAttrs = new Set(["agent.run_id","agent.job_id","agent.business_trace_id","agent.model","agent.provider","agent.tool.name","agent.status","agent.error_code","http.request.method","http.route","http.response.status_code"]);
+const allowedAttrs = new Set(["agent.run_id","agent.job_id","agent.business_trace_id","agent.model","agent.provider","agent.tool.name","agent.status","agent.error_code","agent.eval.dataset_version","http.request.method","http.route","http.response.status_code"]);
 function attributes(attrs: Attributes) { return Object.fromEntries(Object.entries(attrs).filter(([key,value]) => allowedAttrs.has(key) && (typeof value === "string" || typeof value === "number"))); }
 export function startSpan(name: string, attrs: Attributes = {}, parent = activeContext(), kind = SpanKind.INTERNAL, startedAt?: number) {
   const identity = state.identity.getStore();
@@ -214,13 +215,14 @@ export function log(level: "info"|"warn"|"error", event: string, fields: Identit
       severityText: level, attributes: { ...clean, service: state.service } });
   });
 }
-const counterNames = new Set(["agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
-const histogramNames = new Set(["agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
+const counterNames = new Set(["agent_eval_runs_total","agent_eval_regressions_total","agent_eval_gate_failures_total","agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
+const histogramNames = new Set(["agent_eval_case_duration_seconds","agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
 const gaugeNames = new Set(["agent_active_runs","agent_worker_active_jobs"]);
 const instruments = state.instruments;
-const labelKeys = new Set(["provider","model","tool","status","error_code","direction","usage_source"]);
+const labelKeys = new Set(["dataset_version","provider","model","tool","status","error_code","direction","usage_source"]);
 export function metric(name: string, value: number, labels: Attributes = {}) {
   safe(() => {
+    if (state.identity.getStore()?.evaluation && !name.startsWith("agent_eval_")) return;
     if (!Number.isFinite(value)) return;
     const meter = getMeter(); if (!meter) return;
     const attrs = Object.fromEntries(Object.entries(labels).filter(([k,v]) => labelKeys.has(k) && typeof v === "string" && /^[\w.-]{1,80}$/.test(v)));
@@ -228,7 +230,7 @@ export function metric(name: string, value: number, labels: Attributes = {}) {
     if (!instrument) {
       if (counterNames.has(name)) instrument = meter.createCounter(name, { unit: name.includes("cost") ? "USD" : "1" });
       else if (histogramNames.has(name)) instrument = meter.createHistogram(name, { unit: "s", advice: { explicitBucketBoundaries: [0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30,60,120] } });
-      else if (name === "agent_approvals_pending") instrument = meter.createGauge(name, { unit: "1" });
+      else if (name === "agent_approvals_pending" || name === "agent_eval_score") instrument = meter.createGauge(name, { unit: "1" });
       else if (gaugeNames.has(name)) instrument = meter.createUpDownCounter(name, { unit: "1" });
       else return;
       instruments.set(name, instrument);

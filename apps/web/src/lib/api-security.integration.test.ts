@@ -12,6 +12,14 @@ import { GET as approvalList } from '../app/api/approvals/route';
 import { GET as approvalDetail } from '../app/api/approvals/[id]/route';
 import { POST as approve } from '../app/api/approvals/[id]/approve/route';
 import { POST as reject } from '../app/api/approvals/[id]/reject/route';
+import {GET as evalDatasets,POST as publishEvalDataset} from '../app/api/evaluations/datasets/route';
+import {GET as evalDataset} from '../app/api/evaluations/datasets/[id]/route';
+import {POST as submitEvalRun,GET as evalRuns} from '../app/api/evaluations/runs/route';
+import {GET as evalRun} from '../app/api/evaluations/runs/[id]/route';
+import {GET as evalResults} from '../app/api/evaluations/runs/[id]/results/route';
+import {GET as compareEvalRun} from '../app/api/evaluations/runs/[id]/compare/route';
+import {runEvaluationWorker} from '@eap/evaluation';
+import {readFile} from 'node:fs/promises';
 import { GET as recentRuns } from '../app/api/agent/runs/route';
 import { GET as getRun } from '../app/api/agent/runs/[id]/route';
 import { POST as cancel } from '../app/api/agent/runs/[id]/cancel/route';
@@ -82,6 +90,35 @@ describe('protected API integration with real sessions and RLS',()=>{
   const response=await recentRuns(req());expect(response.status).toBe(200);const body=await response.json();expect(body.runs.map((r:{id:string})=>r.id)).toEqual([own.id]);
   const json=JSON.stringify(body);expect(json).not.toContain(foreign.id);expect(json).not.toContain('lease_token');expect(json).not.toContain('checkpoint');
   expect((await recentRuns(req('GET',a,undefined,''))).status).toBe(401);
+ });
+ it('protects evaluation import, version access and async run endpoints with session, RBAC and RLS',async()=>{
+  const dataset=JSON.parse(await readFile(new URL('../../../../packages/evaluation/datasets/risk-v1.json',import.meta.url),'utf8'));
+  expect((await evalDatasets(req('GET',a,undefined,''))).status).toBe(401);
+  const published=await publishEvalDataset(req('POST',a,{dataset}));expect(published.status).toBe(201);const version=await published.json();
+  expect((await evalDataset(req(),context(version.version_id))).status).toBe(200);
+  expect((await publishEvalDataset(req('POST',a,{dataset:{...dataset,executable:'evil()'}}))).status).toBe(400);
+  const queued=await submitEvalRun(req('POST',a,{dataset_version_id:version.version_id,config:{provider:'mock',case_timeout_ms:25}}));expect(queued.status).toBe(202);const run=await queued.json();
+  expect((await evalRun(req(),context(run.id))).status).toBe(200);expect((await evalResults(req(),context(run.id))).status).toBe(200);
+  await db.admin.query("INSERT INTO tenant_memberships(tenant_id,user_id,role) VALUES($1,$2,'admin')",[b,actor]);
+  expect((await evalDataset(req('GET',b),context(version.version_id))).status).toBe(404);expect((await evalRun(req('GET',b),context(run.id))).status).toBe(404);
+  expect((await submitEvalRun(req('POST',b,{dataset_version_id:version.version_id}))).status).toBe(404);
+  await db.admin.query("UPDATE tenant_memberships SET role='member' WHERE tenant_id=$1 AND user_id=$2",[a,actor]);
+  expect((await evalRuns(req())).status).toBe(403);expect((await submitEvalRun(req('POST',a,{dataset_version_id:version.version_id}))).status).toBe(403);
+ });
+ it('compares persisted compatible evaluations through the authenticated API',async()=>{
+  const dataset=JSON.parse(await readFile(new URL('../../../../packages/evaluation/datasets/risk-v1.json',import.meta.url),'utf8'));
+  const published=await publishEvalDataset(req('POST',a,{dataset}));const version=await published.json();const controller=new AbortController();const worker=runEvaluationWorker({db:db.worker,workerId:'api-eval',signal:controller.signal,pollMs:10});
+  const wait=async(id:string)=>{const deadline=Date.now()+5000;while(true){const row=(await db.admin.query('SELECT status FROM eval_runs WHERE id=$1',[id])).rows[0];if(row.status==='completed')return;if(row.status==='failed')throw new Error('Evaluation failed');if(Date.now()>deadline)throw new Error('Evaluation not complete');await new Promise(r=>setTimeout(r,20));}};
+  try{
+   const first=await submitEvalRun(req('POST',a,{dataset_version_id:version.version_id,config:{case_timeout_ms:25}}));const baseline=await first.json();await wait(baseline.id);
+   const second=await submitEvalRun(req('POST',a,{dataset_version_id:version.version_id,baseline_run_id:baseline.id,config:{case_timeout_ms:25}}));expect(second.status).toBe(202);const current=await second.json();await wait(current.id);
+   const response=await compareEvalRun(req(),context(current.id));expect(response.status).toBe(200);const result=await response.json();expect(result.comparison.compatible).toBe(true);expect(result.comparison.regression_cases).toEqual([]);expect(result.comparison.uncertainty).toContain('small_sample');
+  }finally{controller.abort();await worker;}
+ });
+ it('rate limits evaluation submission independently and rejects forged run configuration',async()=>{
+  for(let i=0;i<10;i++)await wiring.security.limit(`eval-submit:${a}`,10,60);
+  expect((await submitEvalRun(req('POST',a,{dataset_version_id:randomUUID()}))).status).toBe(429);
+  expect((await publishEvalDataset(req('POST',a,{dataset:{},tenant_id:b,actor_user_id:'bob'}))).status).toBe(400);
  });
  it('denies anonymous API access including both legacy stream paths',async()=>{
   for(const handler of [createConversation,submit,legacyAgent,legacyChat,legacyChatStream,changeMember,policy])expect((await handler(req('POST',a,{},''))).status).toBe(401);
