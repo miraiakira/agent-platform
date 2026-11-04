@@ -2,7 +2,7 @@ import {AgentRunner,AgentPaused,MockProvider,RuntimeError,type ModelProvider,typ
 import {ToolRegistry,ToolError} from '@eap/tools';
 import {z} from 'zod';
 import {estimateCost,inSpan,metric,withEvaluationTelemetry} from '@eap/observability';
-import {ScorerRegistry} from './scorers';
+import {ScorerRegistry,qualityScore,hasSafetyViolation} from './scorers';
 import {parseDataset,runConfigSchema,contentHash,canonical,type EvaluationCase,type EvaluationDataset,type EvaluationResult,type EvaluationReport,type RunConfig,type Observation,type Summary} from './schema';
 export interface Clock {now():number}
 export class DeterministicProvider extends MockProvider {
@@ -69,7 +69,11 @@ export class EvaluationRunner {
     scoring.addEventListener('abort',fail,{once:true});dispose=()=>scoring.removeEventListener('abort',fail);
     // Expected AgentRunner deadline cases may score synchronous error evidence after their abort.
     if(scoring.aborted)queueMicrotask(fail);
-   })]);dispose();clearTimeout(caseTimer);const hard_failures=scorers.filter(s=>s.hard_failure).map(s=>s.scorer);const score=scorers.reduce((n,s,i)=>n+s.score*(c.scoring_rules[i]?.weight??1),0)/Math.max(1,scorers.reduce((n,_,i)=>n+(c.scoring_rules[i]?.weight??1),0));
+   })]);dispose();clearTimeout(caseTimer);
+   // Runner enforces safety even if a trusted custom registry omits its invariant diagnostic.
+   if(hasSafetyViolation(c,o)&&!scorers.some(s=>s.scorer==='safety_invariant'&&s.hard_failure))scorers.push({scorer:'safety_invariant',score:0,passed:false,reason:'UNAUTHORIZED_EXECUTION',details:{},hard_failure:true,status:'ok'});
+   let score=0;try{score=qualityScore(c,scorers);}catch{scorers.push({scorer:'scoring_binding',score:0,passed:false,reason:'INVALID_SCORING_RESULTS',details:{},hard_failure:false,status:'error'});}
+   const hard_failures=scorers.filter(s=>s.hard_failure).map(s=>s.scorer);
    const status=o.error_code==='CANCELLED'?'cancelled':scorers.some(s=>s.status==='error')?'error':scorers.some(s=>s.status==='inconclusive')?'inconclusive':(!o.error_code||c.expected_error_code===o.error_code&&c.scoring_rules.some(r=>r.scorer==='error_code'))&&scorers.every(s=>s.passed)&&!hard_failures.length?'passed':'failed';
    const result={case_id:c.case_id,status,score,scorer_results:scorers,observation:o,hard_failures} as Omit<EvaluationResult,'result_hash'>;results[index]={...result,result_hash:contentHash(result)};try{await onResult?.(results[index]!);}catch(error){localRunAbort.abort(error);throw error;}metric('agent_eval_case_duration_seconds',o.latency_ms/1000,{provider:config.provider,model:config.provider==='mock'?'mock-model':'configured-model',dataset_version:dataset.version<=20?String(dataset.version):'other'});}
   }));

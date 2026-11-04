@@ -8,7 +8,7 @@ export function canonical(value:unknown):string {
 }
 export const contentHash=(value:unknown)=>createHash('sha256').update(canonical(value)).digest('hex');
 export const scorerNames=['exact_match','contains','json_schema','tool_selection','tool_arguments','tool_sequence','error_code','security_behavior','approval_compliance','model_based'] as const;
-export const scoringRule=z.object({scorer:z.enum(scorerNames),weight:z.number().positive().max(100).default(1),hard:z.boolean().default(false),threshold:z.number().min(0).max(1).default(1),schema:z.record(z.string(),z.unknown()).optional(),rubric:z.string().min(1).max(4000).optional()}).strict();
+export const scoringRule=z.object({scorer:z.enum(scorerNames),weight:z.number().finite().nonnegative().max(100).default(1),hard:z.boolean().default(false),threshold:z.number().min(0).max(1).default(1),schema:z.record(z.string(),z.unknown()).optional(),rubric:z.string().min(1).max(4000).optional()}).strict();
 const call=z.object({name:z.string().regex(/^[a-z][a-z0-9_]{0,79}$/),arguments:z.record(z.string(),z.unknown())}).strict();
 export const evaluationCaseSchema=z.object({
  case_id:z.string().regex(/^[\w-]{1,80}$/),name:z.string().min(1).max(160),
@@ -17,7 +17,7 @@ export const evaluationCaseSchema=z.object({
  expected_output:z.string().max(32000).optional(),expected_error_code:z.string().max(80).nullable().optional(),
  expected_approval_behavior:z.enum(['not_required','pending','approved','rejected']).default('not_required'),
  expected_security_behavior:z.enum(['allowed','denied','tenant_isolated']).default('allowed'),
- scoring_rules:z.array(scoringRule).min(1).max(16),tags:z.array(z.string().regex(/^[\w-]{1,40}$/)).max(12).default([]),
+ scoring_rules:z.array(scoringRule).min(1).max(16).refine(rules=>rules.some(rule=>rule.weight>0),'SCORING_WEIGHT_TOTAL_MUST_BE_POSITIVE'),tags:z.array(z.string().regex(/^[\w-]{1,40}$/)).max(12).default([]),
  tool_order_matters:z.boolean().default(true),
  fixture:z.object({calls:z.array(call).max(8).default([]),output:z.string().max(16000).default('风险分析完成'),stall:z.boolean().default(false),authorization:z.enum(['allow','deny','cross_tenant']).default('allow'),approval:z.enum(['not_required','pending','approved','rejected']).default('not_required')}).strict(),
 }).strict();
@@ -36,7 +36,11 @@ export const runConfigSchema=z.object({provider:z.enum(['mock','deepseek']).defa
 export type RunConfig=z.infer<typeof runConfigSchema>;
 export interface ToolObservation {name:string;arguments:unknown;executed:boolean;denied:boolean;error_code?:string}
 export interface Observation {output:string;tool_calls:ToolObservation[];error_code?:string;approval:{required:boolean;requested:boolean;decision:string;executed_before_approval:boolean};security_violation:boolean;security_reason?:'POLICY_DENIED'|'TENANT_ISOLATED';usage:{input_tokens:number;output_tokens:number};cost:number|null;cost_price?:unknown;usage_source?:'reported'|'partial'|'unavailable';latency_ms:number}
-export interface ScorerResult {scorer:string;score:number;passed:boolean;reason:string;details:Record<string,unknown>;hard_failure:boolean;status:'ok'|'error'|'inconclusive';judge_usage?:{input_tokens:number;output_tokens:number;cost:number|null;price?:unknown}}
+/** Stable content identity of a normalized rule; identical rules share identity and are counted separately. */
+export const scoringRuleId=(rule:EvaluationCase['scoring_rules'][number])=>contentHash(rule);
+export interface ScorerResult {rule_id?:string;scorer:string;score:number;passed:boolean;reason:string;details:Record<string,unknown>;hard_failure:boolean;status:'ok'|'error'|'inconclusive';judge_usage?:{input_tokens:number;output_tokens:number;cost:number|null;price?:unknown}}
+/** score is the configured-rule quality average; hard_failures and status independently control acceptance. */
 export interface EvaluationResult {case_id:string;status:'passed'|'failed'|'error'|'cancelled'|'skipped'|'inconclusive';score:number;scorer_results:ScorerResult[];observation:Observation;hard_failures:string[];result_hash:string}
 export interface EvaluationReport {schema_version:1;dataset_hash:string;dataset_version:number;dataset_name:string;config:RunConfig;results:EvaluationResult[];summary:Summary;report_hash:string}
+/** overall_score averages case quality scores over expected cases, including missing cases as zero. */
 export interface Summary {total:number;overall_score:number;pass_rate:number;tool_accuracy:number|null;security_pass_rate:number|null;approval_compliance:number|null;p50_latency_ms:number;p95_latency_ms:number;input_tokens:number;output_tokens:number;estimated_cost:number|null;judge_tokens:number;judge_cost:number|null;hard_failures:number;missing:number}

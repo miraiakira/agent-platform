@@ -250,3 +250,24 @@ pnpm --filter @eap/agent-worker dev
 - `services/agent-worker/src/index.ts`
 
 故意回归实跑记录：只将 high-risk-query 的 Mock 最终回答替换为错误答案，原 Dataset 和期望不变；得分降为 0.966667，通过率下降，命中 MINIMUM_OVERALL_SCORE / MINIMUM_PASS_RATE / REGRESSION_CASES，CLI 实际退出码为 1。报告保留在 artifacts/evaluation-regression。
+
+
+## Day 11 最终修复：评分权重与安全不变量（2026-11-03）
+
+- `EvaluationResult.score` 复用为 Quality Score：只计算 Dataset 显式配置规则的 `Σ(score × weight) / Σ(weight)`。`summary.overall_score` 为这些 case 分数之和除以预期 case 数（缺失 case 计零）。API、CLI JSON、Markdown、Dashboard 和 Baseline Comparator 均继续读取相同字段；不新增语义重复的 quality_score。
+- 每条规范化规则的 SHA-256 作为稳定 `ScorerResult.rule_id`，与 Scorer 名称一起关联结果和权重，不使用数组位置。同一 Scorer 可配置多条不同规则，完全相同规则按出现次数匹配。结果重排不影响分数；丢失、重复或错误绑定的结果以 error、分数 0 处理。
+- 权重范围为有限数值 `[0,100]`，保留原上限；默认 1。允许单项零权重，但每个 case 权重总和必须大于零，否则导入/执行前明确拒绝 `SCORING_WEIGHT_TOTAL_MUST_BE_POSITIVE`。零权重不跳过规则执行，不隐藏其 error 或 hard failure。修复原先总权重小于 1 时错误地使用分母 1 的问题。
+- 安全不变量由执行证据独立判断，包括违规标记、被拒绝却执行、授权/租户拒绝配置下执行、未经审批执行以及执行内置 Sandbox 不允许的工具。Runner 自身复核，不依赖自定义 Registry 返回诊断。`safety_invariant` 保留为兼容诊断结果，但不绑定规则、不参与质量加权。
+- `hard_failures`、case status 和 Quality Gate 独立决定是否通过；Quality Score=1 时仍可出现 `SECURITY_HARD_FAILURE`。显式配置的 security_behavior / approval_compliance 仍按用户配置参与加权，同时保留硬失败职责。
+- Scorer 抛错或返回非法分数不会通过；error/inconclusive 结果的质量贡献为零，且运行状态不通过。超时同样失败关闭。
+- 历史报告继续按原始 hash 和已存分数读取，不重写不可变历史。旧报告在触发安全诊断或总权重小于 1 时可能含旧算法分数，升级后应重跑 Baseline，避免把算法修正当作模型改善。自定义 Registry 若完全替换 evaluate，须保留每个配置结果的 rule_id；只扩展 register 的现有 Scorer 无需修改。
+- 新增 `packages/evaluation/tests/scoring.test.ts` 覆盖单项/多项/小数权重、结果乱序、同名与重复规则、零/非法权重、异常/丢失结果、安全满分仍失败、Baseline 回归以及 JSON/Markdown 一致性。Dashboard 明确标注“质量得分”并说明安全门禁独立。
+- 边界：Sandbox 工厂与自定义 Scorer 仍属于受信任代码；执行证据检查不是 OS 沙箱，不能发现恶意扩展完全隐瞒的外部副作用。本次没有开始 Day 12。
+
+
+本次实际验证：
+
+- Evaluation 最终共 34 项测试通过（原 20 项 + 新增 14 项），包含真实 PostgreSQL 集成、CLI 故意回归与安全不变量回归测试。
+- `pnpm check` 退出码 0：283 项 TypeScript 测试、Go 测试、全量 lint/typecheck、Next.js 与 Go 构建全部通过；6 个 Mock 用例 Overall Score=1，CLI Quality Gate passed。
+- `git diff --check` 通过。保留原 `see.test.ts` 的 unused `_event` warning，无 lint error。
+- 本次没有执行浏览器人工操作、真实 Provider/Judge 或修改后远程 GitHub Actions；未提交或推送代码。
