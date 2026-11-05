@@ -183,6 +183,8 @@ pnpm check
 
 ## 修改文件清单
 
+2026-11-06 补充：Dashboard 自动浏览器验收已通过，15 个浏览器场景、4 个 API 检查及测试数据清理全部通过。完整范围、限制、失败调试记录与证据位置见 [浏览器验收记录](day12-browser-acceptance.md)。远程 GitHub Actions 仍需针对当前提交单独确认。
+
 - `.github/workflows/ci.yaml`
 - `apps/web/.env.example`
 - `apps/web/src/app/api/agent/jobs/route.ts`

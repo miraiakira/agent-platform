@@ -11,8 +11,12 @@
     "test": "pnpm --filter @eap/evaluation test && pnpm --filter @eap/observability test && pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/persistence test && pnpm --filter @eap/agent-worker test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json",
     "test:observability": "pnpm --filter @eap/agent-worker smoke:observability",
+    "test:e2e:promptops": "pnpm --filter @eap/persistence exec -- node --env-file=../../.env.test.local --import tsx scripts/promptops-browser.ts",
     "eval:run": "pnpm --filter @eap/evaluation cli run",
     "eval:compare": "pnpm --filter @eap/evaluation cli compare",
     "eval:report": "pnpm --filter @eap/evaluation cli report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
   }
 }
