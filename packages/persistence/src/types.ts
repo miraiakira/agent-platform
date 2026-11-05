@@ -39,6 +39,7 @@ export interface StoredMessage {
 }
 
 export interface AgentRunRecord {
+  prompt_binding?: import("./prompt-runtime").PromptPin | null;
   tenant_id?: string;
   actor_user_id?: string | null;
   id: string;

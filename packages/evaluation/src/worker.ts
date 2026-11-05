@@ -1,7 +1,7 @@
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {SecurityStore,securityContext,withSecurityContext,withTenantTransaction} from '@eap/persistence';
+import {promptHash,renderPrompt,trustedPromptVariables,validatePromptDocument,SecurityStore,securityContext,withSecurityContext,withTenantTransaction} from '@eap/persistence';
 import {inSpan,metric,log} from '@eap/observability';
 import {EvaluationRunner,DeterministicProvider} from './runner';
 import {createModelProvider} from '@eap/ai';
@@ -9,7 +9,7 @@ import {ScorerRegistry} from './scorers';
 import {ModelBasedScorer} from './judge';
 import {canonical,contentHash,parseDataset,runConfigSchema,type EvaluationReport} from './schema';
 import {qualityGate,verifyReport} from './comparison';
-export async function runEvaluationWorker(options:{db:Pool;workerId:string;signal:AbortSignal;pollMs?:number}){
+export async function runEvaluationWorker(options:{db:Pool;workerId:string;signal:AbortSignal;pollMs?:number;clock?:import("./runner").Clock}){
  const {db,workerId,signal}=options;const security=new SecurityStore(db);
  while(!signal.aborted){
   try{
@@ -22,7 +22,9 @@ export async function runEvaluationWorker(options:{db:Pool;workerId:string;signa
      await security.authorize('evaluation:run');const config=runConfigSchema.parse(row.config_snapshot);const external=process.env.EVAL_ALLOW_EXTERNAL==='true';if(config.provider!=='mock'&&!external)throw new Error('EXTERNAL_PROVIDER_DISABLED');if(config.judge_enabled&&(!external||process.env.EVAL_ALLOW_JUDGE!=='true'))throw new Error('JUDGE_DISABLED');
      const version=(await db.query('SELECT document,content_hash FROM eval_dataset_versions WHERE id=$1 AND published_at IS NOT NULL',[row.dataset_version_id])).rows[0];const dataset=parseDataset(version?.document);if(contentHash(dataset)!==version.content_hash)throw new Error('DATASET_HASH_MISMATCH');
      const scorers=new ScorerRegistry();if(config.judge_enabled){if(!process.env.EVAL_JUDGE_API_KEY||!process.env.EVAL_JUDGE_MODEL)throw new Error('JUDGE_NOT_CONFIGURED');scorers.register('model_based',new ModelBasedScorer({provider:createModelProvider({provider:'deepseek',apiKey:process.env.EVAL_JUDGE_API_KEY,model:process.env.EVAL_JUDGE_MODEL}),model:process.env.EVAL_JUDGE_MODEL,allowExternal:true,timeoutMs:5000,retries:1}));}
-     const runner=new EvaluationRunner({scorers,allowExternal:external,providerFactory:(c,configuration)=>configuration.provider==='mock'?new DeterministicProvider(c):createModelProvider({provider:'deepseek',apiKey:process.env.LLM_API_KEY,model:configuration.model,baseURL:process.env.LLM_BASE_URL||undefined})});
+     let promptSystem:string|undefined;
+     if(row.prompt_version_id){const v=(await db.query("SELECT * FROM prompt_versions WHERE id=$1 AND status='published'",[row.prompt_version_id])).rows[0];if(!v||v.content_hash!==row.prompt_content_hash||promptHash(v.document)!==row.prompt_content_hash||config.prompt_content_hash!==row.prompt_content_hash||config.prompt_version_id!==row.prompt_version_id||promptHash(row.tool_policy_document)!==config.tool_policy_hash)throw new Error('PROMPT_HASH_MISMATCH');if((await db.query('SELECT 1 FROM prompt_revocations WHERE version_id=$1',[v.id])).rowCount)throw new Error('PROMPT_REVOKED');const d=validatePromptDocument(v.document);promptSystem=renderPrompt(d,trustedPromptVariables(d));}
+     const runner=new EvaluationRunner({clock:options.clock,promptSystem,scorers,allowExternal:external,providerFactory:(c,configuration)=>configuration.provider==='mock'?new DeterministicProvider(c):createModelProvider({provider:'deepseek',apiKey:process.env.LLM_API_KEY,model:configuration.model,baseURL:process.env.LLM_BASE_URL||undefined})});
      const caseRows=(await db.query('SELECT id,case_id FROM eval_cases WHERE dataset_version_id=$1',[row.dataset_version_id])).rows;
      report=await inSpan('agent.evaluation.run',{'agent.run_id':row.id},()=>runner.run(dataset,config,AbortSignal.any([signal,local.signal]),async result=>{
       await withTenantTransaction(db,securityContext()!,async client=>{

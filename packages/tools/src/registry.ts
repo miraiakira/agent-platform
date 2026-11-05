@@ -7,6 +7,7 @@ export interface ToolDefinition {
 }
 
 export interface ToolContext {
+  job?: { id: string; leaseToken: string };
   signal?: AbortSignal;
   approval?: { id: string; jobId: string; leaseToken: string; callId: string; checkpointVersion: number; hash: string };
   authorization?: { tenantId: string; actorUserId: string; policyVersion: number };

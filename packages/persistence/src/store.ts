@@ -27,7 +27,7 @@ const transitions: Record<RunStatus, RunStatus[]> = {
 };
 
 export class PersistenceStore {
-  constructor(private readonly db: Pool) {}
+  constructor(readonly db: Pool) {}
 
   async usageByModel() {
     const result = await this.db.query(`SELECT provider,model,count(*)::int AS runs,

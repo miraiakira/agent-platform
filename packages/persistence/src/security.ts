@@ -7,10 +7,10 @@ import { argumentsHash } from './approval-crypto';
 import type { ApprovalGrant } from './approvals';
 export const roles = ['owner','admin','member','viewer'] as const;
 export type Role = typeof roles[number];
-export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide','evaluation:read','evaluation:manage','evaluation:run'] as const;
+export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide','evaluation:read','evaluation:manage','evaluation:run','prompt:read','prompt:edit','prompt:release'] as const;
 export type Permission = typeof permissions[number];
 const read: Permission[]=['conversation:read','agent:read'];
-const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute'];
+const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute','prompt:read','prompt:edit'];
 export const rolePermissions: Record<Role, readonly Permission[]>={owner:permissions,admin:permissions,member,viewer:read};
 export class SecurityError extends Error {
  constructor(public readonly status:number,public readonly code:string,public readonly retryAfter?:number) {super(code);}
@@ -91,7 +91,7 @@ export class SecurityStore {
   await c.query('UPDATE tenants SET status=$2 WHERE id=$1',[securityContext()?.tenantId,status]);
   await this.audit('tenant.change','tenant',securityContext()?.tenantId??null,'allow','STATUS_UPDATED',c);
  });}
- async authorizeTool(name:string,rawArguments?:string,context?:{approval?:ApprovalGrant}) {
+ async authorizeTool(name:string,rawArguments?:string,context?:{approval?:ApprovalGrant;job?:{id:string;leaseToken:string}}) {
   const ctx=securityContext();
   let role: Role | null;
   let policy: ToolPolicy | undefined;
@@ -104,6 +104,8 @@ export class SecurityStore {
    log('error','security.authorization_unavailable',{error_code:'AUTHORIZATION_UNAVAILABLE'});
    throw new SecurityError(503,'AUTHORIZATION_UNAVAILABLE');
   }
+  const executingJob=context?.job?.id??context?.approval?.jobId;
+  if(executingJob){const revoked=await this.db.query('SELECT 1 FROM agent_runs r JOIN prompt_revocations p ON p.version_id=r.prompt_version_id WHERE r.id=(SELECT run_id FROM agent_jobs WHERE id=$1)',[executingJob]);if(revoked.rowCount)throw new SecurityError(403,'PROMPT_REVOKED');}
   let approved=false;
   if(policy?.requires_approval && context?.approval && rawArguments){
    const a=context.approval;

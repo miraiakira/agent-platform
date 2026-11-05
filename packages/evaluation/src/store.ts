@@ -1,6 +1,6 @@
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
-import {SecurityStore,SecurityError,securityContext,withTenantTransaction} from '@eap/persistence';
+import {promptHash,promptPolicies,validatePromptDocument,SecurityStore,SecurityError,securityContext,withTenantTransaction} from '@eap/persistence';
 import {parseDataset,canonical,contentHash,runConfigSchema,type EvaluationReport,type EvaluationResult,type EvaluationDataset} from './schema';
 import {gateSchema} from './comparison';
 export class EvaluationStore {
@@ -21,9 +21,17 @@ export class EvaluationStore {
   if(config.provider!=='mock'&&process.env.EVAL_ALLOW_EXTERNAL!=='true')throw new SecurityError(400,'EXTERNAL_PROVIDER_DISABLED');if(config.judge_enabled&&(process.env.EVAL_ALLOW_EXTERNAL!=='true'||process.env.EVAL_ALLOW_JUDGE!=='true'))throw new SecurityError(400,'JUDGE_DISABLED');
   return withTenantTransaction(this.db,securityContext()!,async c=>{const ctx=securityContext()!;await c.query('SELECT id FROM tenants WHERE id=$1 FOR UPDATE',[ctx.tenantId]);await this.security.authorize('evaluation:run',c);
    const version=(await c.query('SELECT * FROM eval_dataset_versions WHERE id=$1 AND published_at IS NOT NULL',[versionId])).rows[0];if(!version)throw new SecurityError(404,'NOT_FOUND');
+   let policies:unknown=null;
+   if(config.prompt_version_id){
+    const prompt=(await c.query("SELECT * FROM prompt_versions WHERE id=$1 AND status='published'",[config.prompt_version_id])).rows[0];
+    if(!prompt)throw new SecurityError(404,'NOT_FOUND');validatePromptDocument(prompt.document);
+    if(promptHash(prompt.document)!==prompt.content_hash||(await c.query('SELECT 1 FROM prompt_revocations WHERE version_id=$1',[prompt.id])).rowCount)throw new SecurityError(409,'PROMPT_UNAVAILABLE');
+    if(config.provider!==prompt.model_config.provider||config.model!==prompt.model_config.model)throw new SecurityError(409,'PROMPT_MODEL_MISMATCH');
+    policies=await promptPolicies(c);config.prompt_content_hash=prompt.content_hash;config.tool_policy_hash=promptHash(policies);config.prompt_version=prompt.id;
+   }else if(config.prompt_content_hash||config.tool_policy_hash)throw new SecurityError(400,'PROMPT_VERSION_REQUIRED');
    if(baselineId){const baseline=(await c.query('SELECT dataset_version_id,status FROM eval_runs WHERE id=$1',[baselineId])).rows[0];if(!baseline||baseline.status!=='completed')throw new SecurityError(404,'BASELINE_UNAVAILABLE');if(baseline.dataset_version_id!==versionId)throw new SecurityError(409,'INCOMPATIBLE_DATASET_VERSION');}
    if(Number((await c.query("SELECT count(*) FROM eval_runs WHERE status IN ('queued','running')")).rows[0].count)>=2)throw new SecurityError(429,'EVAL_CONCURRENCY_LIMIT');
-   const id=randomUUID();await c.query(`INSERT INTO eval_runs(id,tenant_id,dataset_version_id,baseline_run_id,model_provider,model_name,model_version,prompt_version,code_revision,config_snapshot,gate_config,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)`,[id,ctx.tenantId,versionId,baselineId??null,config.provider,config.model,config.model_version,config.prompt_version,config.code_revision,JSON.stringify(config),JSON.stringify(gate),ctx.actorUserId]);await this.security.audit('evaluation.run.create','eval_run',id,'allow','QUEUED',c);return {id,status:'queued'};
+   const id=randomUUID();await c.query(`INSERT INTO eval_runs(id,tenant_id,dataset_version_id,baseline_run_id,model_provider,model_name,model_version,prompt_version,code_revision,config_snapshot,gate_config,created_by,prompt_version_id,prompt_content_hash,tool_policy_document) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,$15::jsonb)`,[id,ctx.tenantId,versionId,baselineId??null,config.provider,config.model,config.model_version,config.prompt_version,config.code_revision,JSON.stringify(config),JSON.stringify(gate),ctx.actorUserId,config.prompt_version_id??null,config.prompt_content_hash??null,JSON.stringify(policies)]);await this.security.audit('evaluation.run.create','eval_run',id,'allow','QUEUED',c);return {id,status:'queued'};
   });
  }
  async runs(){await this.security.authorize('evaluation:read');return (await this.db.query('SELECT id,dataset_version_id,baseline_run_id,status,model_provider,model_name,created_at,completed_at,error_code,report->\'summary\' AS summary,gate_result FROM eval_runs ORDER BY created_at DESC LIMIT 100')).rows;}

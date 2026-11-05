@@ -12,6 +12,9 @@ import { GET as approvalList } from '../app/api/approvals/route';
 import { GET as approvalDetail } from '../app/api/approvals/[id]/route';
 import { POST as approve } from '../app/api/approvals/[id]/approve/route';
 import { POST as reject } from '../app/api/approvals/[id]/reject/route';
+import {GET as promptList,POST as promptCreate} from '../app/api/prompts/route';
+import {GET as promptDetail} from '../app/api/prompts/[id]/route';
+import {POST as promptMutation} from '../app/api/prompts/[id]/[...operation]/route';
 import {GET as evalDatasets,POST as publishEvalDataset} from '../app/api/evaluations/datasets/route';
 import {GET as evalDataset} from '../app/api/evaluations/datasets/[id]/route';
 import {POST as submitEvalRun,GET as evalRuns} from '../app/api/evaluations/runs/route';
@@ -119,6 +122,24 @@ describe('protected API integration with real sessions and RLS',()=>{
   for(let i=0;i<10;i++)await wiring.security.limit(`eval-submit:${a}`,10,60);
   expect((await submitEvalRun(req('POST',a,{dataset_version_id:randomUUID()}))).status).toBe(429);
   expect((await publishEvalDataset(req('POST',a,{dataset:{},tenant_id:b,actor_user_id:'bob'}))).status).toBe(400);
+ });
+ it('protects PromptOps with real sessions, origin, strict schemas, independent permissions and tenant RLS',async()=>{
+  expect((await promptList(req('GET',a,undefined,''))).status).toBe(401);
+  expect((await promptCreate(req('POST',a,{key:'risk-agent',name:'Risk',tenant_id:b}))).status).toBe(400);
+  const created=await promptCreate(req('POST',a,{key:'risk-agent',name:'Risk'}));expect(created.status).toBe(201);const {prompt}=await created.json();
+  expect((await promptDetail(req(),context(prompt.id))).status).toBe(200);
+  expect((await promptDetail(req('GET',b),context(prompt.id))).status).toBe(403);
+  expect((await promptDetail(req(),context(randomUUID()))).status).toBe(404);
+  const operation=(...operation:string[])=>({params:Promise.resolve({id:prompt.id,operation})});
+  const document={template:'Trusted instructions',variables_schema:{type:'object',properties:{},required:[],additionalProperties:false},model_config:{provider:'mock',model:'mock-model'}};
+  const drafted=await promptMutation(req('POST',a,{document}),operation('versions'));expect(drafted.status).toBe(201);const {version}=await drafted.json();
+  expect((await promptMutation(req('POST',a,{revision:version.revision}),operation('versions',version.id,'publish'))).status).toBe(200);
+  expect((await promptMutation(req('POST',a,{document,revision:version.revision}),operation('versions',version.id))).status).toBe(409);
+  expect((await promptMutation(req('POST',a,{candidate_version_id:version.id,evaluation_run_id:randomUUID(),dataset_version_id:randomUUID(),passed:true}),operation('releases'))).status).toBe(400);
+  const evil=new Request(`${url}/api/prompts`,{method:'POST',headers:{Origin:'https://evil.test',Cookie:cookie,'x-tenant-id':a},body:'{}'});expect((await promptCreate(evil)).status).toBe(403);
+  await db.admin.query("UPDATE tenant_memberships SET role='member' WHERE tenant_id=$1 AND user_id=$2",[a,actor]);
+  expect((await promptMutation(req('POST',a,{document}),operation('versions'))).status).toBe(201);
+  expect((await promptMutation(req('POST',a,{}),operation('releases'))).status).toBe(403);
  });
  it('denies anonymous API access including both legacy stream paths',async()=>{
   for(const handler of [createConversation,submit,legacyAgent,legacyChat,legacyChatStream,changeMember,policy])expect((await handler(req('POST',a,{},''))).status).toBe(401);

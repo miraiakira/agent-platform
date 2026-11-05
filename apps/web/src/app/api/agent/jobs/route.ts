@@ -8,6 +8,7 @@ import { jobLifecycle } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 const schema = z.object({
+  promptKey: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/).optional(),
   conversationId: z.string().uuid().optional(),
   messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().min(1).max(8000) }).strict()).min(1).max(20),
 }).strict();

@@ -14,6 +14,7 @@ jobs:
       AGENT_CHECKPOINT_KEY: "3333333333333333333333333333333333333333333333333333333333333333"
       EVAL_ALLOW_EXTERNAL: "false"
       EVAL_ALLOW_JUDGE: "false"
+      PROMPT_ROUTING_KEY: "ci-prompt-routing-only-32-characters-never-production"
       DATABASE_URL: postgresql://eap:eap_test_password@localhost:5432/eap_test
       BETTER_AUTH_URL: http://localhost:3551
       BETTER_AUTH_SECRET: ci-only-secret-32-characters-not-for-production
@@ -90,7 +91,7 @@ jobs:
       - name: Agent Worker Lease, Security and Durable Approval Integration Tests
         run: pnpm --filter @eap/agent-worker test
 
-      - name: Evaluation Typecheck and Tests
+      - name: Evaluation and PromptOps Gate, Routing, RLS and HITL Tests
         run: pnpm --filter @eap/evaluation typecheck && pnpm --filter @eap/evaluation test
 
       - name: Deterministic Agent Quality Gate
