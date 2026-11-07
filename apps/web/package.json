@@ -23,7 +23,8 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "^4.6.7",
-    "@eap/evaluation": "workspace:*"
+    "@eap/evaluation": "workspace:*",
+    "@eap/knowledge": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",

@@ -11,7 +11,7 @@ export interface JobExecutor {
 export class AgentExecutor implements JobExecutor {
   constructor(private readonly options: {
     store: PersistenceStore; events: AgentEventStore; lifecycle: JobLifecycle;
-    approvals?: ApprovalStore; security: Pick<SecurityStore, "validateJob">; provider: ModelProvider; model?: string; tools: ToolRegistry; maxDurationMs?: number;
+    approvals?: ApprovalStore; security: Pick<SecurityStore, "validateJob">; provider: ModelProvider; model?: string; tools: ToolRegistry; maxDurationMs?: number; knowledge?: { validateRun(runId:string,answer?:string):Promise<void> };
   }) {}
 
   async execute(job: ClaimedJob, signal: AbortSignal): Promise<JobResult> {
@@ -30,6 +30,7 @@ export class AgentExecutor implements JobExecutor {
     const pinned=run.prompt_binding?await verifyPromptPin(store.db,run.prompt_binding,run.input):null;
     if(pinned&&pinned.model_config.provider!==provider.name)throw new SecurityError(409,'PROMPT_MODEL_MISMATCH');
     const model=pinned?.model_config.model??this.options.model;
+    await this.options.knowledge?.validateRun(run.id);
     const resumed=await approvals?.resume(job);
     if(pinned&&resumed&&resumed.state.history[0]?.content!==(run.input as AgentMessage[])[0]?.content)throw new SecurityError(409,'PROMPT_CHECKPOINT_MISMATCH');
     let paused=false;
@@ -40,6 +41,7 @@ export class AgentExecutor implements JobExecutor {
       onTrace(value) { trace = value; },
       beforeTool: approvals ? async (state,deadlineSignal) => {
         if(run.prompt_binding)await verifyPromptPin(store.db,run.prompt_binding,run.input);
+        await this.options.knowledge?.validateRun(run.id);
         const call=state.batch.calls[state.batch.nextIndex]!;
         if(resumed?.grant.callId===call.id) return;
         // Only valid registered calls can request approval; invalid arguments remain normal tool errors.
@@ -60,7 +62,7 @@ export class AgentExecutor implements JobExecutor {
           if (!await lifecycle.startTool(job.id, job.lease_token, {
             id: call.id, name: call.function.name, arguments: call.function.arguments,
           },grant)) throw new RuntimeError("TOOL_REPLAY_BLOCKED", "Lease invalid or tool intent already exists; replay disabled");
-          return {job:{id:job.id,leaseToken:job.lease_token},...(grant?{approval:grant}:{})};
+          return {callId:call.id,job:{id:job.id,leaseToken:job.lease_token},...(grant?{approval:grant}:{})};
         },
         async after(call, result) {
           try {
@@ -81,7 +83,7 @@ export class AgentExecutor implements JobExecutor {
         terminal = event;
         continue;
       }
-      if (event.type === "text-delta") answer += event.text;
+      if (event.type === "text-delta") {answer += event.text;if(this.options.knowledge)continue;}
       const saved = await events.append({ runId: run.id, jobId: job.id, leaseToken: job.lease_token, type: event.type, payload: event });
       if (!saved) break;
     }});
@@ -89,6 +91,8 @@ export class AgentExecutor implements JobExecutor {
       if(error instanceof RuntimeError && error.code==='INVALID_CHECKPOINT' && job.active_approval_id && approvals) await approvals.security.audit('approval.execution_denied','approval',job.active_approval_id,'deny',error.code).catch(()=>log('error','security.audit_unavailable',{error_code:'AUDIT_UNAVAILABLE'}));
       throw error;
     }
+    await this.options.knowledge?.validateRun(run.id,answer);
+    if(this.options.knowledge&&answer&&terminal?.type==='done')await events.append({runId:run.id,jobId:job.id,leaseToken:job.lease_token,type:'text-delta',payload:{type:'text-delta',text:answer}});
     if(paused) return {status:"waiting_approval"};
     return {
       status: terminal?.type === "done" ? "completed" : "failed",

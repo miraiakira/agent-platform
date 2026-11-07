@@ -7,14 +7,15 @@
     "dev": "pnpm --parallel --filter @eap/web --filter @eap/business-api dev",
     "build": "pnpm --filter @eap/web build && pnpm --filter @eap/business-api build",
     "lint": "pnpm --filter @eap/web lint && pnpm --filter @eap/business-api lint",
-    "typecheck": "pnpm --filter @eap/evaluation typecheck && pnpm --filter @eap/observability typecheck && pnpm --filter @eap/tools typecheck && pnpm --filter @eap/ai typecheck && pnpm --filter @eap/persistence typecheck && pnpm --filter @eap/agent-worker typecheck && pnpm --filter @eap/web typecheck",
-    "test": "pnpm --filter @eap/evaluation test && pnpm --filter @eap/observability test && pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/persistence test && pnpm --filter @eap/agent-worker test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json",
+    "typecheck": "pnpm --filter @eap/knowledge typecheck && pnpm --filter @eap/evaluation typecheck && pnpm --filter @eap/observability typecheck && pnpm --filter @eap/tools typecheck && pnpm --filter @eap/ai typecheck && pnpm --filter @eap/persistence typecheck && pnpm --filter @eap/agent-worker typecheck && pnpm --filter @eap/web typecheck",
+    "test": "pnpm --filter @eap/knowledge test && pnpm --filter @eap/evaluation test && pnpm --filter @eap/observability test && pnpm --filter @eap/tools test && pnpm --filter @eap/ai test && pnpm --filter @eap/persistence test && pnpm --filter @eap/agent-worker test && pnpm --filter @eap/web test && pnpm --filter @eap/business-api test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json && pnpm eval:run --ci --dataset packages/evaluation/datasets/rag-v1.json --out artifacts/rag-evaluation",
     "test:observability": "pnpm --filter @eap/agent-worker smoke:observability",
     "test:e2e:promptops": "pnpm --filter @eap/persistence exec -- node --env-file=../../.env.test.local --import tsx scripts/promptops-browser.ts",
     "eval:run": "pnpm --filter @eap/evaluation cli run",
     "eval:compare": "pnpm --filter @eap/evaluation cli compare",
-    "eval:report": "pnpm --filter @eap/evaluation cli report"
+    "eval:report": "pnpm --filter @eap/evaluation cli report",
+    "test:e2e:knowledge": "pnpm --filter @eap/business-api build && pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day13.local --import tsx scripts/knowledge-browser.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1"

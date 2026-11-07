@@ -7,10 +7,10 @@ import { argumentsHash } from './approval-crypto';
 import type { ApprovalGrant } from './approvals';
 export const roles = ['owner','admin','member','viewer'] as const;
 export type Role = typeof roles[number];
-export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide','evaluation:read','evaluation:manage','evaluation:run','prompt:read','prompt:edit','prompt:release'] as const;
+export const permissions = ['conversation:create','conversation:read','conversation:delete','agent:execute','agent:cancel','agent:read','tool:execute','tool:manage','tenant:manage','member:invite','member:manage','audit:read','approval:read','approval:decide','evaluation:read','evaluation:manage','evaluation:run','prompt:read','prompt:edit','prompt:release','knowledge:read','knowledge:write','knowledge:manage','memory:read','memory:write'] as const;
 export type Permission = typeof permissions[number];
-const read: Permission[]=['conversation:read','agent:read'];
-const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute','prompt:read','prompt:edit'];
+const read: Permission[]=['conversation:read','agent:read','knowledge:read','memory:read'];
+const member: Permission[]=[...read,'conversation:create','agent:execute','agent:cancel','tool:execute','prompt:read','prompt:edit','knowledge:write','memory:write'];
 export const rolePermissions: Record<Role, readonly Permission[]>={owner:permissions,admin:permissions,member,viewer:read};
 export class SecurityError extends Error {
  constructor(public readonly status:number,public readonly code:string,public readonly retryAfter?:number) {super(code);}
@@ -49,6 +49,7 @@ export class SecurityStore {
    await c.query("INSERT INTO tenant_memberships(tenant_id,user_id,role) VALUES($1,$2,'owner')",[id,actor]);
    await c.query(`INSERT INTO tenant_tool_policies(tenant_id,tool_name,enabled,allowed_roles,risk_level,requires_approval)
     VALUES($1,'get_high_risk_transactions',true,ARRAY['owner','admin','member'],'low',false)`,[id]);
+   for(const name of ['search_knowledge','memory_search','memory_list','memory_write','memory_delete'])await c.query("INSERT INTO tenant_tool_policies(tenant_id,tool_name,enabled,allowed_roles,risk_level,requires_approval) VALUES($1,$2,false,ARRAY['owner','admin','member'],$3,$4)",[id,name,['memory_write','memory_delete'].includes(name)?'high':'low',['memory_write','memory_delete'].includes(name)]);
    await this.audit('tenant.create','tenant',id,'allow','CREATED',c);return rows[0];
   }));
  }
@@ -75,7 +76,8 @@ export class SecurityStore {
  async policies() {await this.authorize('conversation:read');return (await this.db.query('SELECT * FROM tenant_tool_policies WHERE tenant_id=$1',[securityContext()?.tenantId])).rows;}
  async setPolicy(policy:Omit<ToolPolicy,'policy_version'>) {
   await this.authorize('tool:manage');
-  if(policy.tool_name!=='get_high_risk_transactions') throw new SecurityError(400,'UNKNOWN_TOOL');
+  if(!['get_high_risk_transactions','search_knowledge','memory_search','memory_list','memory_write','memory_delete'].includes(policy.tool_name)) throw new SecurityError(400,'UNKNOWN_TOOL');
+  if(['memory_write','memory_delete'].includes(policy.tool_name)&&(!policy.requires_approval||policy.risk_level!=='high'))throw new SecurityError(400,'MEMORY_APPROVAL_REQUIRED');
   return transaction(this.db,async c=>{
    await c.query('SELECT id FROM tenants WHERE id=$1 FOR UPDATE',[securityContext()?.tenantId]);
    await this.authorize('tool:manage',c);
@@ -105,7 +107,7 @@ export class SecurityStore {
    throw new SecurityError(503,'AUTHORIZATION_UNAVAILABLE');
   }
   const executingJob=context?.job?.id??context?.approval?.jobId;
-  if(executingJob){const revoked=await this.db.query('SELECT 1 FROM agent_runs r JOIN prompt_revocations p ON p.version_id=r.prompt_version_id WHERE r.id=(SELECT run_id FROM agent_jobs WHERE id=$1)',[executingJob]);if(revoked.rowCount)throw new SecurityError(403,'PROMPT_REVOKED');}
+  if(executingJob){const valid=await this.db.query('SELECT eap_retrieval_valid(run_id) AS ok FROM agent_jobs WHERE id=$1',[executingJob]);if(!valid.rows[0]?.ok)throw new SecurityError(403,'RETRIEVAL_REVOKED');const revoked=await this.db.query('SELECT 1 FROM agent_runs r JOIN prompt_revocations p ON p.version_id=r.prompt_version_id WHERE r.id=(SELECT run_id FROM agent_jobs WHERE id=$1)',[executingJob]);if(revoked.rowCount)throw new SecurityError(403,'PROMPT_REVOKED');}
   let approved=false;
   if(policy?.requires_approval && context?.approval && rawArguments){
    const a=context.approval;

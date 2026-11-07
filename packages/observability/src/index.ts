@@ -152,7 +152,7 @@ export function currentTraceId() { const id = trace.getSpan(activeContext())?.sp
 export function activeContext() { return state.manager.active(); }
 export function withEvaluationTelemetry<T>(fn:()=>T):T { return state.identity.run({...state.identity.getStore(),evaluation:true},fn); }
 export function withIdentity<T>(identity: Identity, fn: () => T): T { return state.identity.run(identity, fn); }
-const allowedAttrs = new Set(["agent.prompt.version_id","agent.prompt.release_id","agent.prompt.variant","agent.run_id","agent.job_id","agent.business_trace_id","agent.model","agent.provider","agent.tool.name","agent.status","agent.error_code","agent.eval.dataset_version","http.request.method","http.route","http.response.status_code"]);
+const allowedAttrs = new Set(["knowledge.document_version","knowledge.embedding_provider","knowledge.base_id","agent.prompt.version_id","agent.prompt.release_id","agent.prompt.variant","agent.run_id","agent.job_id","agent.business_trace_id","agent.model","agent.provider","agent.tool.name","agent.status","agent.error_code","agent.eval.dataset_version","http.request.method","http.route","http.response.status_code"]);
 function attributes(attrs: Attributes) { return Object.fromEntries(Object.entries(attrs).filter(([key,value]) => allowedAttrs.has(key) && (typeof value === "string" || typeof value === "number"))); }
 export function startSpan(name: string, attrs: Attributes = {}, parent = activeContext(), kind = SpanKind.INTERNAL, startedAt?: number) {
   const identity = state.identity.getStore();
@@ -215,11 +215,11 @@ export function log(level: "info"|"warn"|"error", event: string, fields: Identit
       severityText: level, attributes: { ...clean, service: state.service } });
   });
 }
-const counterNames = new Set(["agent_prompt_resolutions_total","agent_prompt_release_changes_total","agent_prompt_rollbacks_total","agent_prompt_gate_failures_total","agent_prompt_experiment_assignments_total","agent_eval_runs_total","agent_eval_regressions_total","agent_eval_gate_failures_total","agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
-const histogramNames = new Set(["agent_eval_case_duration_seconds","agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
+const counterNames = new Set(["knowledge_ingestion_total","knowledge_ingestion_failures_total","knowledge_retrieval_total","knowledge_embedding_tokens_total","agent_memory_operations_total","rag_citation_validation_failures_total","agent_prompt_resolutions_total","agent_prompt_release_changes_total","agent_prompt_rollbacks_total","agent_prompt_gate_failures_total","agent_prompt_experiment_assignments_total","agent_eval_runs_total","agent_eval_regressions_total","agent_eval_gate_failures_total","agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
+const histogramNames = new Set(["knowledge_retrieval_duration_seconds","agent_eval_case_duration_seconds","agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
 const gaugeNames = new Set(["agent_active_runs","agent_worker_active_jobs"]);
 const instruments = state.instruments;
-const labelKeys = new Set(["prompt_version","dataset_version","provider","model","tool","status","error_code","direction","usage_source"]);
+const labelKeys = new Set(["operation","mode","reason","prompt_version","dataset_version","provider","model","tool","status","error_code","direction","usage_source"]);
 export function metric(name: string, value: number, labels: Attributes = {}) {
   safe(() => {
     if (state.identity.getStore()?.evaluation && !name.startsWith("agent_eval_")) return;

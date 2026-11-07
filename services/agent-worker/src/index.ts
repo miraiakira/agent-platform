@@ -1,3 +1,4 @@
+import {KnowledgeStore,registerKnowledgeTools,runKnowledgeWorker} from '@eap/knowledge';
 import { initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observability";
 import { runEvaluationWorker } from "@eap/evaluation";
 import { randomUUID } from "node:crypto";
@@ -29,10 +30,13 @@ async function main() {
     if(!process.env.BUSINESS_API_KEY || process.env.BUSINESS_API_KEY.length<32) throw new Error("BUSINESS_API_KEY (32+ characters) required");
     const approvals = new ApprovalStore(pool);
     const lifecycle = new JobLifecycle(pool, security);
-    await Promise.all([runEvaluationWorker({db:pool,workerId:`eval-${process.pid}`,signal:shutdown.signal}),runWorker({
+    const knowledge=new KnowledgeStore(pool);
+    const tools=createBusinessTools({baseURL:process.env.BUSINESS_API_URL??'http://127.0.0.1:8080',apiKey:process.env.BUSINESS_API_KEY,authorize:(name,args,context)=>security.authorizeTool(name,args,context)});
+    registerKnowledgeTools(tools,knowledge);
+    await Promise.all([runKnowledgeWorker(knowledge,shutdown.signal),runEvaluationWorker({db:pool,workerId:`eval-${process.pid}`,signal:shutdown.signal}),runWorker({
       approvals, queue: new AgentJobQueue(pool, true), lifecycle,
       executor: new AgentExecutor({ approvals, store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, security, provider, model: process.env.LLM_MODEL,
-        tools: createBusinessTools({ baseURL: process.env.BUSINESS_API_URL ?? "http://127.0.0.1:8080", apiKey: process.env.BUSINESS_API_KEY, authorize: (name,args,context) => security.authorizeTool(name,args,context) }),
+        tools, knowledge,
         maxDurationMs: positive("WORKER_MAX_DURATION_MS", 60_000),
       }),
       workerId: process.env.WORKER_ID ?? `agent-worker-${randomUUID()}`,

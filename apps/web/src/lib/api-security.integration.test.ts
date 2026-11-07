@@ -1,3 +1,5 @@
+import {handleKnowledge,handleMemory} from './knowledge-api';
+import {KnowledgeStore,IngestionWorker} from '@eap/knowledge';
 import { beforeEach,afterEach,describe,it,expect,vi } from 'vitest';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
@@ -203,4 +205,21 @@ describe('protected API integration with real sessions and RLS',()=>{
   for(let i=0;i<120;i++)await wiring.security.limit(`tenant:${a}`,120,60);
   const response=await conversations(req());expect(response.status).toBe(429);expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
  });
+ it('enforces real Session, Origin, strict tenant selectors and Knowledge ACL through routes',async()=>{expect((await handleKnowledge(req('GET',a,undefined,''),['bases'])).status).toBe(401);const created=await handleKnowledge(req('POST',a,{name:'API Knowledge'}),['bases']);expect(created.status).toBe(200);const kb=(await created.json()).base.id;
+  expect((await handleKnowledge(req('POST',a,{name:'spoof',tenant_id:b}),['bases'])).status).toBe(400);
+  expect((await handleKnowledge(req('GET',b),['bases'])).status).toBe(403);
+  expect((await handleKnowledge(new Request(url+'/api/knowledge/bases',{method:'POST',headers:{Origin:'https://evil.invalid',Cookie:cookie,'x-tenant-id':a},body:JSON.stringify({name:'evil'})}),['bases'])).status).toBe(403);
+  const upload=await handleKnowledge(req('POST',a,{knowledge_base_id:kb,title:'Source',mime_type:'text/plain',content_base64:Buffer.from('Refund policy').toString('base64')}),['documents']);expect(upload.status).toBe(200);const doc=(await upload.json()).version.document_id;await new IngestionWorker(new KnowledgeStore(db.worker)).once();
+  const search=await handleKnowledge(req('POST',a,{query:'Refund'}),['search']);expect(search.status).toBe(200);expect((await search.json()).results).toHaveLength(1);expect((await handleKnowledge(req('GET',b),['documents',doc,'versions'])).status).toBe(403);
+ });
+ it('denies Viewer mutations and hides unowned Memory through real authenticated APIs',async()=>{const mem=await handleMemory(req('POST',a,{content:'private',source_reference:{type:'user_confirmed'},confirmed:true}),[]);expect(mem.status).toBe(200);await withSecurityContext({tenantId:a,actorUserId:actor},()=>wiring.security.changeMember('bob','owner','active'));await withSecurityContext({tenantId:a,actorUserId:'bob'},()=>wiring.security.changeMember(actor,'viewer','active'));
+ expect((await handleKnowledge(req('POST',a,{name:'no'}),['bases'])).status).toBe(403);expect((await handleMemory(req('POST',a,{content:'no',source_reference:{type:'user_confirmed'},confirmed:true}),[])).status).toBe(403);
+ });
+
+ it('isolates user memory between two real authenticated users in the same tenant',async()=>{const created=await handleMemory(req('POST',a,{content:'Alice private preference',source_reference:{type:'user_confirmed'},confirmed:true}),[]);const id=(await created.json()).memory.id;
+ const signed=await auth.handler(new Request(url+'/api/auth/sign-up/email',{method:'POST',headers:{Origin:url,'Content-Type':'application/json'},body:JSON.stringify({name:'Other',email:'other-memory@example.test',password:'other-password-12-chars'})}));expect(signed.status).toBe(200);const other=(await signed.json()).user.id;const otherCookie=signed.headers.getSetCookie().find(c=>c.includes('session_token='))!.split(';')[0];await withSecurityContext({tenantId:a,actorUserId:actor},()=>wiring.security.changeMember(other,'member','active'));
+ const list=await handleMemory(req('GET',a,undefined,otherCookie),[]);expect((await list.json()).memories).toEqual([]);expect((await handleMemory(req('DELETE',a,undefined,otherCookie),[id])).status).toBe(404);
+ expect((await handleMemory(req('POST',a,{content:'not confirmed',source_reference:{type:'user_confirmed'}}),[])).status).toBe(400);
+ });
+
 });

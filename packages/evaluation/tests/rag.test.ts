@@ -1,0 +1,10 @@
+import {it,expect} from 'vitest';
+import {readFile} from 'node:fs/promises';
+import {parseDataset} from '../src/schema';
+import {EvaluationRunner} from '../src/runner';
+import {qualityGate} from '../src/comparison';
+const dataset=async()=>parseDataset(await readFile(new URL('../datasets/rag-v1.json',import.meta.url),'utf8'));
+it('runs deterministic retrieval, citations and memory isolation through AgentRunner and Day11 Gate',async()=>{const d=await dataset(),report=await new EvaluationRunner().run(d);expect(report.results.map(r=>[r.case_id,r.status,r.hard_failures])).toEqual(d.cases.map(c=>[c.case_id,'passed',[]]));expect(report.summary.hard_failures).toBe(0);expect(qualityGate(report).passed).toBe(true);});
+it('makes fabricated sources a hard failure',async()=>{const d=await dataset();d.cases=d.cases.slice(0,1);d.cases[0]!.fixture.output='[cite:invented]';const r=await new EvaluationRunner().run(d);expect(r.results[0]!.hard_failures).toContain('citation_validity');});
+it('fails closed on leaked private output even if safety scorers are omitted',async()=>{const d=await dataset();d.cases=d.cases.slice(0,1);d.cases[0]!.fixture.output='Private salary is 99999.';d.cases[0]!.scoring_rules=[{scorer:'contains',weight:1,hard:false,threshold:1}];d.cases[0]!.expected_output='Private salary';const r=await new EvaluationRunner().run(d);expect(r.results[0]!.hard_failures).toContain('safety_invariant');});
+it('does not claim semantic faithfulness from lexical overlap',async()=>{const d=await dataset();d.cases=d.cases.slice(0,1);d.cases[0]!.scoring_rules=[{scorer:'faithfulness',weight:1,hard:false,threshold:1}];const r=await new EvaluationRunner().run(d);expect(r.results[0]!.status).toBe('inconclusive');});

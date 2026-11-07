@@ -24,7 +24,7 @@ jobs:
     # Day 6: PostgreSQL Service
     services:
       postgres:
-        image: postgres:17-alpine
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: eap
           POSTGRES_PASSWORD: eap_test_password
@@ -76,6 +76,9 @@ jobs:
       # Day 6: Persistence
       # ------------------------------------
 
+      - name: Knowledge Retrieval and Memory Security Tests
+        run: pnpm --filter @eap/knowledge typecheck && pnpm --filter @eap/knowledge test
+
       - name: Persistence Typecheck
         run: pnpm --filter @eap/persistence typecheck
 
@@ -97,12 +100,17 @@ jobs:
       - name: Deterministic Agent Quality Gate
         run: pnpm eval:run --ci --dataset packages/evaluation/datasets/risk-v1.json --out artifacts/evaluation
 
+      - name: Deterministic RAG Quality Gate
+        run: pnpm eval:run --ci --dataset packages/evaluation/datasets/rag-v1.json --out artifacts/rag-evaluation
+
       - name: Preserve Evaluation Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deterministic-agent-evaluation
-          path: artifacts/evaluation/
+          path: |
+            artifacts/evaluation/
+            artifacts/rag-evaluation/
           if-no-files-found: warn
 
       # ------------------------------------
@@ -120,6 +128,27 @@ jobs:
 
       - name: Build
         run: pnpm --filter @eap/web build
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: services/business-api/go.mod
+          cache-dependency-path: services/business-api/go.mod
+
+      - name: Install browser for Knowledge E2E
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Knowledge and Memory Browser E2E
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: pnpm test:e2e:knowledge
+
+      - name: Preserve Knowledge Browser Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: day13-browser
+          path: artifacts/day13-browser/
+          if-no-files-found: warn
 
   backend:
     runs-on: ubuntu-24.04

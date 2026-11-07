@@ -13,7 +13,9 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     restart: unless-stopped
   postgres:
-    image: postgres:17-alpine
+    image: eap-postgres-vector:17.11-0.8.2-alpine
+    build:
+      context: ./infra/postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: eap

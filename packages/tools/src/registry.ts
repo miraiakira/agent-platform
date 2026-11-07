@@ -7,6 +7,7 @@ export interface ToolDefinition {
 }
 
 export interface ToolContext {
+  callId?: string;
   job?: { id: string; leaseToken: string };
   signal?: AbortSignal;
   approval?: { id: string; jobId: string; leaseToken: string; callId: string; checkpointVersion: number; hash: string };
@@ -51,7 +52,7 @@ export class ToolRegistry {
     try { return await this.authorize(name, argumentsJson, context); }
     catch (error) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      const known = typeof code === "string" && ["TOOL_FORBIDDEN", "AUDIT_UNAVAILABLE", "AUTHORIZATION_UNAVAILABLE"].includes(code);
+      const known = typeof code === "string" && ["TOOL_FORBIDDEN", "AUDIT_UNAVAILABLE", "AUTHORIZATION_UNAVAILABLE", "RETRIEVAL_REVOKED", "MEMORY_REVOKED", "PROMPT_REVOKED"].includes(code);
       throw beforeExecutionError(known ? code : "AUTHORIZATION_UNAVAILABLE", "Tool authorization did not complete");
     }
   }

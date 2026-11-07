@@ -14,6 +14,7 @@ const navigation: Array<{ href: string; label: string; caption: string; icon: Ic
   { href: "/approvals", label: "人工审批", caption: "Approvals", icon: "shield" },
   { href: "/prompts", label: "Prompt 管理", caption: "PromptOps", icon: "activity" },
   { href: "/evaluations", label: "Agent 评测", caption: "Evaluation", icon: "activity" },
+  { href: "/knowledge", label: "知识与记忆", caption: "Knowledge & Memory", icon: "activity" },
   { href: "/security", label: "组织与权限", caption: "Organization", icon: "shield" },
 ];
 export function Brand({ compact = false }: { compact?: boolean }) {
