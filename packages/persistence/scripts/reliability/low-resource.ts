@@ -8,6 +8,8 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 let runId: string | undefined;
 let runStatus: string | undefined;
 let accepted = false;
+let submissionState: 'NOT_ATTEMPTED'|'ATTEMPTED_UNCONFIRMED'|'ACCEPTED' = 'NOT_ATTEMPTED';
+let stage = 'configuration';
 let requests = 0;
 let started: number | undefined;
 let lastFinished: number | undefined;
@@ -20,10 +22,26 @@ const object = (value: unknown): Record<string, unknown> | undefined =>
     ? value as Record<string, unknown> : undefined;
 
 async function main() {
+  const action=process.argv[2]??'--plan';
+  if(action==='--plan'){
+    console.log(JSON.stringify({profile:'low-resource',action:'plan',status:'NOT VERIFIED',requests:0,
+      execution_approval_required:true,
+      configuration_checks:{dedicated_target:process.env.LOW_RESOURCE_BASE_URL==='http://127.0.0.1:3554',
+        tenant_id:uuid.test(process.env.LOW_RESOURCE_TENANT_ID??''),knowledge_base_id:uuid.test(process.env.LOW_RESOURCE_KNOWLEDGE_BASE_ID??''),
+        session_present:!!process.env.LOW_RESOURCE_COOKIE,fixture_attested:process.env.LOW_RESOURCE_FIXTURE_READY==='true',
+        non_production:process.env.NODE_ENV!=='production'},
+      limits:{requests:5,serial:true,window_ms:10000,request_timeout_ms:1500,spacing_ms:2000,response_bytes:65536,retries:0},
+      steps:['health','submit-one-job','status','retrieval','final-status'],
+      notes:['Plan only: no network, services, Docker, builds or fixture preparation.',
+        'Execution requires separate operator approval and an already prepared isolated fixture.'],
+    },null,2));return;
+  }
   let status: 'PASS' | 'FAIL' | 'NOT VERIFIED' = 'NOT VERIFIED';
   let reason = 'CONFIGURATION_REQUIRED';
   try {
     const env = process.env;
+    if(action!=='--execute'||process.argv.length>3)fail('EXPLICIT_EXECUTION_REQUIRED');
+    if(env.LOW_RESOURCE_EXECUTION_APPROVED!=='true')fail('EXECUTION_APPROVAL_REQUIRED');
     if (env.NODE_ENV === 'production') fail('PRODUCTION_PROBE_FORBIDDEN');
     // Operator attestation, not automatic proof of the server's configuration.
     if (env.LOW_RESOURCE_FIXTURE_READY !== 'true') fail('FIXTURE_ATTESTATION_REQUIRED');
@@ -46,6 +64,8 @@ async function main() {
       if (remaining() < 1 || requests >= 5) fail('WINDOW_EXPIRED');
       const signal = AbortSignal.timeout(Math.max(1, Math.floor(Math.min(1500, remaining()))));
       requests++;
+      stage=name;
+      if(name==='submit')submissionState='ATTEMPTED_UNCONFIRMED';
       const before = performance.now();
       try {
         const response = await fetch(base + path, {
@@ -59,6 +79,7 @@ async function main() {
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         checks.push({ name, http_status: response.status, duration_ms: Math.round(performance.now() - before) });
+        if(name==='submit'&&response.status===202){accepted=true;submissionState='ACCEPTED';}
         if (response.status !== (name === 'submit' ? 202 : 200)) {
           await response.body?.cancel();
           fail('UNEXPECTED_HTTP_STATUS');
@@ -115,12 +136,14 @@ async function main() {
     reason = error instanceof ProbeError ? error.code : 'PROBE_FAILED';
     status = ['WINDOW_EXPIRED', 'REQUEST_TIMEOUT', 'CONFIGURATION_REQUIRED',
       'FIXTURE_ATTESTATION_REQUIRED', 'DEDICATED_LOOPBACK_TARGET_REQUIRED',
+      'EXECUTION_APPROVAL_REQUIRED', 'EXPLICIT_EXECUTION_REQUIRED',
       'FIXTURE_IDS_REQUIRED', 'SESSION_COOKIE_REQUIRED', 'PRODUCTION_PROBE_FORBIDDEN'].includes(reason)
       ? 'NOT VERIFIED' : 'FAIL';
   }
   console.log(JSON.stringify({
     profile: 'low-resource', scope: 'isolated-fixture-flow-only', status, reason,
-    generated_at: new Date().toISOString(), requests, checks, accepted,
+    generated_at: new Date().toISOString(), requests, checks, stage,
+    accepted:submissionState==='ATTEMPTED_UNCONFIRMED'?null:accepted,submission_state:submissionState,
     run_id: runId ?? null, run_status: runStatus ?? null,
     elapsed_ms: started === undefined ? 0 : Math.round(performance.now() - started),
     cpu_limit: 'NOT ENFORCED', fixture_configuration: 'OPERATOR_ATTESTED',
