@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "./workspace-provider";
 import { Icon } from "./ui/icon";
 import { friendlyError, responseError } from "@/lib/ui-errors";
-import { loadPersistedAgentChat } from "@/lib/persisted-agent-chat";
+import { loadPersistedAgentChat, loadPersistedToolActivities } from "@/lib/persisted-agent-chat";
 import { subscribeRun } from "@/lib/async-agent-client";
 
 import {
@@ -87,7 +87,15 @@ export function ChatPanel({
         setCost(run.observability?.cost?{usd:run.observability.cost.usd,coverage:run.observability.usageSource??'unavailable'}:null);
         const terminal=['completed','failed','cancelled','interrupted'].includes(run.status);
         setStatus(run.status==='waiting_approval'?'WaitingApproval':run.status==='completed'?'Completed':run.status==='cancelled'?'Cancelled':terminal?'Failed':'Queued');
-        if(terminal){runRef.current=undefined;if(run.error)setFailure(friendlyError(`${run.error.code??'AGENT_ERROR'}: ${run.error.message??'任务未完成'}`));return;}
+        if(terminal){
+          runRef.current=undefined;
+          if(run.error)setFailure(friendlyError(`${run.error.code??'AGENT_ERROR'}: ${run.error.message??'任务未完成'}`));
+          try{
+            const activities=await loadPersistedToolActivities(run.id,controller.signal);
+            if(!controller.signal.aborted)setToolActivities(activities);
+          }catch(error){if(!controller.signal.aborted)setFailure(friendlyError(error));}
+          return;
+        }
         setLoading(true);let text='';
         for await(const event of subscribeRun(`/api/agent/runs/${run.id}/events`,controller.signal)){
           if(controller.signal.aborted)return;

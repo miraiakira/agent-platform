@@ -1,4 +1,18 @@
 import { responseError } from './ui-errors';
+import { subscribeRun } from './async-agent-client';
+export interface PersistedToolActivity {
+ id:string;name:string;status:'running'|'success'|'error'|'interrupted';
+}
+/** Reconstruct display-only tool activity from committed events; never execute tools on restore. */
+export async function loadPersistedToolActivities(runId:string,signal:AbortSignal):Promise<PersistedToolActivity[]>{
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId))throw new Error('INVALID_RUN_ID');
+ const activities=new Map<string,PersistedToolActivity>();
+ for await(const event of subscribeRun(`/api/agent/runs/${runId}/events`,signal)){
+  if(event.type==='tool-start')activities.set(event.toolCallId,{id:event.toolCallId,name:event.toolName,status:'running'});
+  if(event.type==='tool-result')activities.set(event.toolCallId,{id:event.toolCallId,name:event.toolName,status:event.success?'success':'error'});
+ }
+ return [...activities.values()].map(activity=>activity.status==='running'?{...activity,status:'interrupted'}:activity);
+}
 export interface RestoredRun {
  id:string;conversation_id:string;status:string;trace_id:string;model_calls:number;
  input:unknown;output:unknown;error:{code?:string;message?:string}|null;

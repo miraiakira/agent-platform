@@ -27,6 +27,7 @@
     "load:capacity": "pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day14.local --import tsx scripts/reliability/capacity.ts",
     "reliability:alerts": "pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day14.local --import tsx scripts/reliability/alerts.ts",
     "reliability:browser": "pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day14.local --import tsx scripts/reliability/browser.ts",
+    "test:e2e:business": "pnpm --filter @eap/business-api build && pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day14.local --import tsx scripts/reliability/business-browser.ts",
     "reliability:report": "pnpm --filter @eap/persistence exec -- node --env-file-if-exists=../../.env.day14.local --import tsx scripts/reliability/acceptance.ts"
   },
   "devDependencies": {

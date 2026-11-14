@@ -174,6 +174,19 @@ jobs:
           PLAYWRIGHT_CHANNEL: chromium
         run: pnpm reliability:browser
 
+      - name: Agent Approval and Organization Isolation Browser Acceptance
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: pnpm test:e2e:business
+
+      - name: Preserve Agent Approval Browser Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: business-browser-acceptance
+          path: artifacts/business-browser/
+          if-no-files-found: warn
+
       # A diagnostic summary, not a production approval gate. The actual
       # regression/fault/alert/browser steps remain mandatory; missing manual
       # stress/soak and production evidence are reported without approving them.
