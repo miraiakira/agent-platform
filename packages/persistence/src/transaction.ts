@@ -1,3 +1,4 @@
+import {metric} from "@eap/observability";
 import type { Pool, PoolClient } from "pg";
 import { scopedTransaction } from "./security-context";
 import type { ClaimedJob } from "./job-queue";
@@ -38,7 +39,8 @@ export async function lockLease(client: PoolClient, jobId: string, token: string
     `SELECT 1 FROM agent_jobs WHERE id = $1 AND lease_token = $2
      AND status = 'running' AND lease_expires_at > clock_timestamp()`, [jobId, token],
   );
-  return valid.rowCount && run.rows[0]?.status === "running" ? job : null;
+  const accepted=valid.rowCount&&run.rows[0]?.status==="running";if(!accepted)metric("worker_fencing_rejections_total",1);
+  return accepted?job:null;
 }
 
 // Caller holds the job and run locks until commit, so sequence order is commit order.

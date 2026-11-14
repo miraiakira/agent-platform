@@ -23,3 +23,5 @@ coverage.txt
 /services/business-api/server
 # Evaluation artifacts may include authorized prompts and model output
 /artifacts/
+
+.next-load/

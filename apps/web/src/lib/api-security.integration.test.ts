@@ -143,6 +143,11 @@ describe('protected API integration with real sessions and RLS',()=>{
   expect((await promptMutation(req('POST',a,{document}),operation('versions'))).status).toBe(201);
   expect((await promptMutation(req('POST',a,{}),operation('releases'))).status).toBe(403);
  });
+ it('rejects oversized job input before parsing or creating a run',async()=>{
+  const r=req('POST',a,{messages:[{role:'user',content:'x'.repeat(1_000_001)}]});
+  expect((await submit(r)).status).toBe(413);
+  expect((await db.admin.query('SELECT count(*)::int AS n FROM agent_runs')).rows[0].n).toBe(0);
+ });
  it('denies anonymous API access including both legacy stream paths',async()=>{
   for(const handler of [createConversation,submit,legacyAgent,legacyChat,legacyChatStream,changeMember,policy])expect((await handler(req('POST',a,{},''))).status).toBe(401);
   expect((await conversations(req('GET',a,undefined,''))).status).toBe(401);

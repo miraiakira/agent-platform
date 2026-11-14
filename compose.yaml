@@ -12,6 +12,12 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    cpus: 1
+    mem_limit: 256m
   postgres:
     image: eap-postgres-vector:17.11-0.8.2-alpine
     build:
@@ -58,6 +64,7 @@ services:
     command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=24h", "--storage.tsdb.retention.size=512MB"]
     volumes:
       - ./infra/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./infra/observability/reliability-alerts.yaml:/etc/prometheus/reliability-alerts.yaml:ro
       - prometheus_data:/prometheus
     healthcheck:
       test: ["CMD", "/eap-healthcheck", "http://127.0.0.1:9090/-/ready"]

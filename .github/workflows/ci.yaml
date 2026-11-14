@@ -134,13 +134,60 @@ jobs:
           go-version-file: services/business-api/go.mod
           cache-dependency-path: services/business-api/go.mod
 
+      - name: Reliability Harness Typecheck
+        run: pnpm --filter @eap/persistence exec tsc --noEmit -p tsconfig.reliability.json
+
+      - name: Full Regression Evidence
+        run: pnpm reliability:check
+
+      - name: Reliability and Fault Injection Evidence
+        run: pnpm reliability:test
+
+      - name: Disposable Backup and Load Database
+        run: docker compose -p eap-day14 -f compose.day14-test.yaml up -d --wait
+
+      - name: Encrypted Backup Restore and Database Restart Drill
+        env:
+          TEST_DATABASE_URL: postgresql://eap:eap_day14_test_password@127.0.0.1:5544/eap_test
+        run: pnpm backup:restore-test
+
+      - name: Build Load Fixture Business API
+        run: pnpm --filter @eap/business-api build
+
+      - name: Authenticated k6 Load Smoke
+        env:
+          TEST_DATABASE_URL: postgresql://eap:eap_day14_test_password@127.0.0.1:5544/eap_test
+        run: pnpm load:test smoke
+
+      - name: Validate Alert Rules and Burn Tests
+        run: pnpm reliability:alerts
+
+      - name: Stop Disposable Reliability Database
+        if: always()
+        run: docker compose -p eap-day14 -f compose.day14-test.yaml down
+
       - name: Install browser for Knowledge E2E
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Knowledge and Memory Browser E2E
+      - name: Knowledge Memory and PromptOps Browser Evidence
         env:
           PLAYWRIGHT_CHANNEL: chromium
-        run: pnpm test:e2e:knowledge
+        run: pnpm reliability:browser
+
+      # A diagnostic summary, not a production approval gate. The actual
+      # regression/fault/alert/browser steps remain mandatory; missing manual
+      # stress/soak and production evidence are reported without approving them.
+      - name: Summarize Available Day 14 Evidence
+        if: always()
+        continue-on-error: true
+        run: pnpm reliability:report
+
+      - name: Preserve Reliability Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: day14-reliability
+          path: artifacts/day14/
 
       - name: Preserve Knowledge Browser Evidence
         if: always()

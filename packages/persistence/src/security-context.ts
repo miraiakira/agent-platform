@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { log } from '@eap/observability';
+import { log,metric } from '@eap/observability';
 import type { Pool, PoolClient, QueryConfig } from 'pg';
 export interface SecurityContext { tenantId?: string; actorUserId: string; }
 // HMR must share the same context with the cached scoped pool. Never pair a
@@ -78,7 +78,8 @@ export function scopedPool(raw: Pool, role: 'eap_app' | 'eap_worker', beforeChec
   }
   async function checkout() {
     await beforeCheckout?.();
-    const client = await raw.connect();
+    const waiting=performance.now();
+    const client = await raw.connect().finally(()=>metric("postgres_pool_wait_seconds",(performance.now()-waiting)/1000));
     const identity = securityContext();
     let phase: 'idle' | 'starting' | 'active' | 'failed' | 'ending' | 'broken' | 'released' = 'idle';
     let poisoned = false;

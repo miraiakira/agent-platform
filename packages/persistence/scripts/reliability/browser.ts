@@ -1,0 +1,2 @@
+import {metadata,run,save,assertTestTarget} from './common';
+assertTestTarget();const results=[];for(const name of ['test:e2e:knowledge','test:e2e:promptops']){const code=await run('pnpm',[name],{...process.env,PLAYWRIGHT_CHANNEL:'chromium'},b=>process.stdout.write(b));results.push({name,status:code===0?'PASS':'FAIL'});}await save('browser',{...await metadata('browser-regression'),status:results.every(r=>r.status==='PASS')?'PASS':'FAIL',results});if(results.some(r=>r.status==='FAIL'))process.exitCode=1;

@@ -1,0 +1,117 @@
+{
+  "uid": "day14-queue",
+  "title": "Day 14 Queue \u2014 Proposed SLO / observed signals",
+  "schemaVersion": 40,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Queued",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(agent_jobs_queued)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Running",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(agent_jobs_running)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Oldest seconds",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(agent_queue_oldest_seconds)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Queue wait P95",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95,sum by(le)(rate(agent_queue_wait_seconds_bucket[5m])))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

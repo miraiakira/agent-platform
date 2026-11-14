@@ -1,0 +1,117 @@
+{
+  "uid": "day14-recovery",
+  "title": "Day 14 Recovery \u2014 Proposed SLO / observed signals",
+  "schemaVersion": 40,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Fencing rejections",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(worker_fencing_rejections_total[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Uncertain outcomes",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(external_tool_uncertain_outcomes_total[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Poll retries",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(agent_retries_total[5m]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Last scheduled backup age",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time()-max(backup_last_success_seconds)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "NOT VERIFIED / no samples"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

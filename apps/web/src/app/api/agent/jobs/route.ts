@@ -1,4 +1,4 @@
-import { protectedApi } from "@/lib/security";
+import { boundedJson,protectedApi } from "@/lib/security";
 import { inSpan, extractTraceContext, log, errorCode } from "@eap/observability";
 import { z } from "zod";
 import { securityContext } from "@eap/persistence";
@@ -17,7 +17,7 @@ async function handlePOST(request: Request) {
   const requestKey = request.headers.get("idempotency-key");
   if (!requestKey || !/^[a-zA-Z0-9_-]{1,128}$/.test(requestKey)) return Response.json({ error: "Valid Idempotency-Key required" }, { status: 400 });
   let body: unknown;
-  try { body = await request.json(); } catch { return Response.json({ error: "Invalid JSON" }, { status: 400 }); }
+  try { body = await boundedJson(request); } catch(error) { if(error instanceof (await import("@eap/persistence")).SecurityError)throw error; return Response.json({ error: "Invalid JSON" }, { status: 400 }); }
   const parsed = schema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid request" }, { status: 400 });
   await security.limit(`job:${securityContext()?.tenantId}:${securityContext()?.actorUserId}`,20,60);

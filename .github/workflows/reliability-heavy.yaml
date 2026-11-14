@@ -1,0 +1,39 @@
+name: Reliability Stress and Soak
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        type: choice
+        options: [baseline, stress, spike, soak]
+        default: baseline
+      soak_duration:
+        description: 'k6 duration; bounded workflow timeout still applies'
+        default: '30m'
+permissions:
+  contents: read
+jobs:
+  capacity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with: {node-version: '24'}
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-go@v6
+        with: {go-version-file: services/business-api/go.mod}
+      - run: pnpm install --frozen-lockfile
+      - run: docker compose -p eap-day14 -f compose.day14-test.yaml up -d --wait
+      - run: pnpm --filter @eap/business-api build
+      - run: pnpm load:test "$LOAD_PROFILE"
+        env:
+          TEST_DATABASE_URL: postgresql://eap:eap_day14_test_password@127.0.0.1:5544/eap_test
+          LOAD_PROFILE: '${{ inputs.profile }}'
+          SOAK_DURATION: '${{ inputs.soak_duration }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: day14-capacity
+          path: artifacts/day14/load/
+      - if: always()
+        run: docker compose -p eap-day14 -f compose.day14-test.yaml down

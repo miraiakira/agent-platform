@@ -215,11 +215,11 @@ export function log(level: "info"|"warn"|"error", event: string, fields: Identit
       severityText: level, attributes: { ...clean, service: state.service } });
   });
 }
-const counterNames = new Set(["knowledge_ingestion_total","knowledge_ingestion_failures_total","knowledge_retrieval_total","knowledge_embedding_tokens_total","agent_memory_operations_total","rag_citation_validation_failures_total","agent_prompt_resolutions_total","agent_prompt_release_changes_total","agent_prompt_rollbacks_total","agent_prompt_gate_failures_total","agent_prompt_experiment_assignments_total","agent_eval_runs_total","agent_eval_regressions_total","agent_eval_gate_failures_total","agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
-const histogramNames = new Set(["knowledge_retrieval_duration_seconds","agent_eval_case_duration_seconds","agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
+const counterNames = new Set(["backup_failures_total","agent_eval_security_hard_failures_total","http_requests_total","agent_submission_total","agent_job_completion_total","agent_job_failures_total","worker_lease_expired_total","worker_fencing_rejections_total","agent_retries_total","agent_admission_rejections_total","external_tool_uncertain_outcomes_total","knowledge_ingestion_total","knowledge_ingestion_failures_total","knowledge_retrieval_total","knowledge_embedding_tokens_total","agent_memory_operations_total","rag_citation_validation_failures_total","agent_prompt_resolutions_total","agent_prompt_release_changes_total","agent_prompt_rollbacks_total","agent_prompt_gate_failures_total","agent_prompt_experiment_assignments_total","agent_eval_runs_total","agent_eval_regressions_total","agent_eval_gate_failures_total","agent_approvals_requested_total","agent_approvals_decided_total","agent_runs_total","agent_worker_claims_total","agent_worker_lease_renewal_failures_total","agent_worker_blocked_jobs_total","agent_model_requests_total","agent_model_tokens_total","agent_model_estimated_cost_usd_total","agent_tool_executions_total"]);
+const histogramNames = new Set(["http_request_duration_seconds","postgres_pool_wait_seconds","agent_execution_duration_seconds","knowledge_retrieval_duration_seconds","agent_eval_case_duration_seconds","agent_approval_wait_duration_seconds","agent_run_duration_seconds","agent_queue_wait_seconds","agent_model_duration_seconds","agent_tool_duration_seconds"]);
 const gaugeNames = new Set(["agent_active_runs","agent_worker_active_jobs"]);
 const instruments = state.instruments;
-const labelKeys = new Set(["operation","mode","reason","prompt_version","dataset_version","provider","model","tool","status","error_code","direction","usage_source"]);
+const labelKeys = new Set(["route","operation","mode","reason","prompt_version","dataset_version","provider","model","tool","status","error_code","direction","usage_source"]);
 export function metric(name: string, value: number, labels: Attributes = {}) {
   safe(() => {
     if (state.identity.getStore()?.evaluation && !name.startsWith("agent_eval_")) return;
@@ -230,7 +230,7 @@ export function metric(name: string, value: number, labels: Attributes = {}) {
     if (!instrument) {
       if (counterNames.has(name)) instrument = meter.createCounter(name, { unit: name.includes("cost") ? "USD" : "1" });
       else if (histogramNames.has(name)) instrument = meter.createHistogram(name, { unit: "s", advice: { explicitBucketBoundaries: [0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30,60,120] } });
-      else if (name === "agent_approvals_pending" || name === "agent_eval_score") instrument = meter.createGauge(name, { unit: "1" });
+      else if (["agent_jobs_queued","agent_jobs_running","agent_queue_oldest_seconds","agent_workers_live","agent_worker_last_seen_seconds","postgres_pool_connections","postgres_pool_waiting","postgres_pool_capacity","backup_last_success_seconds"].includes(name) || name === "agent_approvals_pending" || name === "agent_eval_score") instrument = meter.createGauge(name, { unit: "1" });
       else if (gaugeNames.has(name)) instrument = meter.createUpDownCounter(name, { unit: "1" });
       else return;
       instruments.set(name, instrument);

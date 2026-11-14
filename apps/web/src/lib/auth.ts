@@ -34,7 +34,7 @@ export async function getAuth() {
   if(process.env.NODE_ENV==='production' && new URL(url).protocol!=='https:') throw new Error('Authentication requires HTTPS in production');
   const raw=new Pool({connectionString:process.env.DATABASE_URL});
   checked=assertRuntimeRole(raw).finally(()=>raw.end());
-  authPool=new Pool({connectionString:process.env.DATABASE_URL,options:'-c role=eap_auth',max:5});
+  authPool=new Pool({connectionString:process.env.DATABASE_URL,options:'-c role=eap_auth',max:5,statement_timeout:10000,connectionTimeoutMillis:5000});
   singleton=createAuth(authPool,{secret,url,production:process.env.NODE_ENV==='production',
    google:process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET?{clientId:process.env.GOOGLE_CLIENT_ID,clientSecret:process.env.GOOGLE_CLIENT_SECRET}:undefined});
  }

@@ -45,6 +45,7 @@ export async function runEvaluationWorker(options:{db:Pool;workerId:string;signa
      await security.audit('evaluation.run.complete','eval_run',row.id,status==='completed'&&gate?.passed?'allow':'deny',error??(gate?.passed?'PASSED':'GATE_FAILED'),client);
      await client.query('UPDATE eval_runs SET status=$3,completed_at=clock_timestamp(),lease_expires_at=NULL,error_code=$4,report=$5::jsonb,canonical_report=$6,report_hash=$7,gate_result=$8::jsonb WHERE id=$1 AND lease_token=$2',[row.id,row.lease_token,status,cancelled?'CANCELLED':signal.aborted?'WORKER_STOPPED':error??null,report?JSON.stringify(report):null,report?canonical(report):null,report?contentHash(report):null,gate?JSON.stringify(gate):null]);
     });
+    if(report?.summary.hard_failures)metric("agent_eval_security_hard_failures_total",report.summary.hard_failures);
     if(gate&&!gate.passed)metric('agent_eval_gate_failures_total',1);if(gate?.comparison?.regression_cases.length)metric('agent_eval_regressions_total',gate.comparison.regression_cases.length);
    });
   }catch{log('error','evaluation.worker_error',{error_code:'EVAL_WORKER_ERROR'});await delay(options.pollMs??1000,undefined,{signal}).catch(()=>{});}

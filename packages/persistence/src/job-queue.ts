@@ -1,4 +1,4 @@
-import { injectTraceHeaders } from "@eap/observability";
+import { injectTraceHeaders,metric } from "@eap/observability";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { JobLifecycle } from "./job-lifecycle";
@@ -242,7 +242,7 @@ export class AgentJobQueue {
   }
 
   async blockExpiredJobs(): Promise<string[]> {
-    if (this.securedWorker) return (await this.db.query<{id:string}>("SELECT eap_reap_jobs() AS id")).rows.map(r=>r.id);
+    if (this.securedWorker){const rows=(await this.db.query<{id:string}>("SELECT eap_reap_jobs() AS id")).rows;for(const _ of rows){void _;metric("worker_lease_expired_total",1);metric("agent_job_completion_total",1,{status:"interrupted"});metric("agent_job_failures_total",1,{status:"interrupted"});}return rows.map(r=>r.id);}
     const client = await this.db.connect();
 
     try {

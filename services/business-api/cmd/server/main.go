@@ -33,6 +33,10 @@ func run() int {
 		Addr:              addr,
 		Handler:           httpapi.NewHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	telemetry.Event(ctx, "server.started", "")

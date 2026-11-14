@@ -1,0 +1,36 @@
+rule_files:
+  - reliability-alerts.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{status="success"}'
+        values: '0+98x90'
+      - series: 'http_requests_total{status="server_error"}'
+        values: '0+2x90'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'Proposed API error budget burning in both 5m and 1h windows'}
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{status="success"}'
+        values: '0+100x90'
+      - series: 'http_requests_total{status="server_error"}'
+        values: '0+0x90'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'agent_workers_live'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WorkerUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: 'No fresh worker heartbeat or worker telemetry missing'}

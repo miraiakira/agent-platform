@@ -2,6 +2,8 @@
 
 Next.js Web、Go Business API、持久化 Agent Worker 的 pnpm Monorepo。Day 13 新增企业知识、精确 Hybrid RAG 与显式授权记忆；完整说明见 [Day 13](docs/day13-enterprise-knowledge-memory.md)。
 
+可靠性与生产门禁见 [Day 14](docs/day14-production-hardening.md)；演示、复验及交接步骤见 [Day 15](docs/day15-delivery.md)。各阶段是否通过以对应版本的执行证据为准。
+
 ## 本地启动
 
 ```bash

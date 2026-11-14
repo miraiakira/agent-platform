@@ -1,3 +1,4 @@
+import {metric} from '@eap/observability';
 import { withSecurityContext, SecurityError, type Permission } from '@eap/persistence';
 import { getAuth } from './auth';
 import { security } from './persistence';
@@ -21,7 +22,8 @@ export async function authenticated<T>(request:Request,fn:(actor:string)=>Promis
  }catch(error){return securityResponse(error);}
 }
 export async function protectedApi(request:Request,permission:Permission,fn:()=>Promise<Response>):Promise<Response> {
- return await authenticated(request,async actor=>{
+ const started=performance.now();
+ const response=await authenticated(request,async actor=>{
   const url=new URL(request.url);
   // Cookie is only a selector, never evidence of membership; query is needed for EventSource.
   const tenant=request.headers.get('x-tenant-id')??url.searchParams.get('tenant')??request.headers.get('cookie')?.match(/(?:^|;\s*)eap_tenant=([0-9a-f-]+)/)?.[1];
@@ -35,4 +37,17 @@ export async function protectedApi(request:Request,permission:Permission,fn:()=>
    }
   });
  }) as Response;
+ const path=new URL(request.url).pathname;
+ const route=path==='/api/agent/jobs'?'agent_submit':path.startsWith('/api/agent/runs')?(path.endsWith('/events')?'agent_events':'agent_status'):path.startsWith('/api/knowledge')?'knowledge':path.startsWith('/api/memories')?'memory':path.startsWith('/api/prompts')?'prompt':path.startsWith('/api/evaluations')?'evaluation':'other';
+ const status=response.status>=500?'server_error':response.status===429?'limited':response.status>=400?'client_error':'success';
+ metric('http_requests_total',1,{route,status});if(route!=='agent_events')metric('http_request_duration_seconds',(performance.now()-started)/1000,{route,status});
+ if(route==='agent_submit')metric('agent_submission_total',1,{status:response.status===202?'accepted':response.status===429||response.status===503?'capacity_or_unavailable':response.status>=500?'server_error':'invalid_or_denied'});
+ return response;
+}
+
+export async function boundedJson(request:Request,maxBytes=1_000_000):Promise<unknown>{
+ if(Number(request.headers.get('content-length')??0)>maxBytes)throw new SecurityError(413,'REQUEST_TOO_LARGE');
+ const reader=request.body?.getReader();if(!reader)throw new SyntaxError('Missing JSON');let size=0;const chunks:Uint8Array[]=[];
+ try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes){await reader.cancel();throw new SecurityError(413,'REQUEST_TOO_LARGE');}chunks.push(value);}}finally{reader.releaseLock();}
+ return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }

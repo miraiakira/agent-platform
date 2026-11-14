@@ -1,0 +1,56 @@
+groups:
+  - name: proposed-slo-recordings
+    rules:
+      - record: eap:api_error_ratio:5m
+        expr: sum(rate(http_requests_total{status="server_error"}[5m])) / sum(rate(http_requests_total{status=~"success|server_error"}[5m]))
+      - record: eap:api_error_ratio:1h
+        expr: sum(rate(http_requests_total{status="server_error"}[1h])) / sum(rate(http_requests_total{status=~"success|server_error"}[1h]))
+      - record: eap:api_error_ratio:30m
+        expr: sum(rate(http_requests_total{status="server_error"}[30m])) / sum(rate(http_requests_total{status=~"success|server_error"}[30m]))
+      - record: eap:api_error_ratio:6h
+        expr: sum(rate(http_requests_total{status="server_error"}[6h])) / sum(rate(http_requests_total{status=~"success|server_error"}[6h]))
+  - name: reliability-alerts
+    rules:
+      - alert: ErrorBudgetFastBurn
+        expr: eap:api_error_ratio:5m / 0.001 > 14.4 and eap:api_error_ratio:1h / 0.001 > 14.4
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Proposed API error budget burning in both 5m and 1h windows'}
+      - alert: ErrorBudgetSlowBurn
+        expr: eap:api_error_ratio:30m / 0.001 > 6 and eap:api_error_ratio:6h / 0.001 > 6
+        for: 15m
+        labels: {severity: warning}
+        annotations: {summary: 'Proposed API error budget burning in both 30m and 6h windows'}
+      - alert: QueueBacklog
+        expr: max(agent_queue_oldest_seconds) > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'Oldest queued job exceeds one minute'}
+      - alert: WorkerUnavailable
+        expr: max(agent_workers_live) < 1 or absent(agent_workers_live) or time()-max(agent_worker_last_seen_seconds)>30
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'No fresh worker heartbeat or worker telemetry missing'}
+      - alert: JobFailureSpike
+        expr: sum(rate(agent_job_failures_total{status!="cancelled"}[5m])) / sum(rate(agent_job_completion_total{status!="cancelled"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'Observed terminal job failure rate exceeds five percent'}
+      - alert: DBConnectionSaturation
+        expr: max(postgres_pool_connections / postgres_pool_capacity) > 0.9 and max(postgres_pool_waiting) > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Runtime pool is saturated and requests are waiting'}
+      - alert: LeaseExpirationSpike
+        expr: sum(increase(worker_lease_expired_total[5m])) > 3
+        labels: {severity: critical}
+        annotations: {summary: 'Lease expirations require blocked-job and uncertain-outcome review'}
+      - alert: SecurityHardFailure
+        expr: sum(increase(agent_eval_security_hard_failures_total[5m])) > 0 or sum(increase(rag_citation_validation_failures_total[5m])) > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Security hard failure or citation validation failed; inspect persisted reasons'}
+      - alert: BackupFailureOrMissingEvidence
+        expr: time() - max(backup_last_success_seconds) > 86400 or absent(backup_last_success_seconds)
+        for: 15m
+        labels: {severity: critical}
+        annotations: {summary: 'No fresh successful scheduled backup evidence; fixture drills are not scheduled backups'}

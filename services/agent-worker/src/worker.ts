@@ -1,13 +1,14 @@
 import { inSpan, startSpan, extractTraceContext, withIdentity, metric, log, errorCode } from "@eap/observability";
 import { RuntimeError } from "@eap/ai";
 import { setTimeout as delay } from "node:timers/promises";
-import { withSecurityContext, SecurityError } from "@eap/persistence";
+import { retryDelay,withSecurityContext, SecurityError } from "@eap/persistence";
 import type { AgentJobQueue, JobLifecycle, ClaimedJob } from "@eap/persistence";
 import type { JobExecutor, JobResult } from "./executor";
 
 export interface WorkerOptions {
   approvals?: import("@eap/persistence").ApprovalStore; queue: AgentJobQueue; lifecycle: JobLifecycle; executor: JobExecutor;
   workerId: string; signal: AbortSignal;
+  shutdownGraceMs?:number; snapshot?:()=>Promise<void>;
   concurrency?: number; leaseSeconds?: number; pollIntervalMs?: number;
   onError?: (error: unknown) => void;
 }
@@ -17,15 +18,19 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
   const lease = options.leaseSeconds ?? 30;
   const poll = options.pollIntervalMs ?? 1000;
   const concurrency = options.concurrency ?? 1;
-  if (!workerId || !Number.isFinite(lease) || lease < 0.1 || !Number.isInteger(concurrency) || concurrency < 1 || !Number.isFinite(poll) || poll <= 0) {
+  if (!workerId || !Number.isFinite(lease) || lease < 0.1 || !Number.isInteger(concurrency) || concurrency < 1 || concurrency>8 || !Number.isFinite(poll) || poll <= 0) {
     throw new Error("Invalid worker configuration");
   }
+  const grace=options.shutdownGraceMs??0;if(!Number.isInteger(grace)||grace<0||grace>60000)throw new Error("Invalid shutdown grace");
+  let lastSnapshot=0;
   const report = options.onError ?? ((error: unknown) => log("error", "worker.error", { error_code: errorCode(error), worker_id: workerId }));
+  const refreshSnapshot=async()=>{if(options.snapshot&&Date.now()-lastSnapshot>5000){lastSnapshot=Date.now();try{await options.snapshot();}catch(error){report(error);}}};
   const pause = () => delay(poll, undefined, { signal }).catch(() => {});
 
   async function execute(job: ClaimedJob) {
     const controller = new AbortController();
-    const stop = () => controller.abort(new RuntimeError("WORKER_STOPPED", "Worker stopped"));
+    let drainTimer:ReturnType<typeof setTimeout>|undefined;
+    const stop=()=>{const abort=()=>controller.abort(new RuntimeError("WORKER_STOPPED","Worker drain deadline exceeded"));if(grace)drainTimer=setTimeout(abort,grace);else abort();};
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     // Serial heartbeat loop; always joined before finalization.
@@ -38,6 +43,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
         try {
           const renewed = await queue.renewLease(job.id, job.lease_token, lease);
           if (heartbeatStop.signal.aborted) break;
+          await refreshSnapshot();
           if (!renewed) {
             metric("agent_worker_lease_renewal_failures_total",1,{status:"rejected"});
             const current = await queue.getJobByRunId(job.run_id);
@@ -59,9 +65,10 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
         }
       }
     })();
-    let result: JobResult;
+    let result: JobResult;let detachAbort=()=>{};let abortTimer:ReturnType<typeof setTimeout>|undefined;
     try {
-      result = await executor.execute(job, controller.signal);
+      result=await Promise.race([executor.execute(job,controller.signal),new Promise<never>((_,reject)=>{// Let a terminal result already queued in this event-loop turn win over later shutdown.
+      const abort=()=>{abortTimer=setTimeout(()=>reject(controller.signal.reason),0);};controller.signal.addEventListener("abort",abort,{once:true});detachAbort=()=>controller.signal.removeEventListener("abort",abort);if(controller.signal.aborted)abort();})]);
     } catch (error) {
       report(error);
       const reason = controller.signal.aborted ? controller.signal.reason : error;
@@ -69,6 +76,7 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
         ? { code: reason.code, message: reason.message }
         : { code: "WORKER_ERROR", message: "Worker execution interrupted" } };
     } finally {
+      detachAbort();if(abortTimer)clearTimeout(abortTimer);if(drainTimer)clearTimeout(drainTimer);
       heartbeatStop.abort();
       await heartbeat;
       signal.removeEventListener("abort", stop);
@@ -93,30 +101,34 @@ export async function runWorker(options: WorkerOptions): Promise<void> {
   }
 
   await Promise.all(Array.from({ length: concurrency }, async () => {
+    let failures=0;
     while (!signal.aborted) {
       try {
+        await refreshSnapshot();
         await options.approvals?.expire();
         const blocked = await queue.blockExpiredJobs();
         if (blocked.length) metric("agent_worker_blocked_jobs_total",blocked.length);
         const claimStarted = Date.now();
-        const job = await queue.claim(workerId, lease);
+        const job = await queue.claim(workerId, lease);failures=0;
         if (job) {
           // Successful claim spans join the persisted submission context; idle polls do not flood tracing.
           startSpan("agent.job.claim", { "agent.run_id": job.run_id, "agent.job_id": job.id },
             extractTraceContext(job.trace_context), undefined, claimStarted).end();
           metric("agent_worker_claims_total",1);
-          metric("agent_queue_wait_seconds",Math.max(0,(Date.now()-new Date(job.created_at).getTime())/1000));
+          metric("agent_queue_wait_seconds",Math.max(0,(Date.now()-new Date(job.available_at).getTime())/1000));
           metric("agent_worker_active_jobs",1);
           const span = startSpan("agent.job.execute", { "agent.run_id": job.run_id, "agent.job_id": job.id }, extractTraceContext(job.trace_context));
+          const executionStarted=performance.now();
           let outcome: string | undefined;
           try {
             outcome = await withIdentity({ run_id: job.run_id, job_id: job.id, worker_id: workerId }, () => span.run(() => job.tenant_id && job.actor_user_id ? withSecurityContext({tenantId:job.tenant_id,actorUserId:job.actor_user_id},()=>execute(job)) : execute(job)));
-          } finally { span.end(outcome); metric("agent_worker_active_jobs",-1); }
+          } finally { span.end(outcome);metric("agent_execution_duration_seconds",(performance.now()-executionStarted)/1000); metric("agent_worker_active_jobs",-1); }
         }
         else await pause();
       } catch (error) {
         report(error);
-        await pause();
+        metric("agent_retries_total",1,{reason:"poll_failure"});
+        await delay(retryDelay(failures++,poll),undefined,{signal}).catch(()=>{});
       }
     }
   }));

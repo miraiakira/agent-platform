@@ -3,6 +3,8 @@ import type { Pool, PoolClient } from 'pg';
 import { currentTraceId, log } from '@eap/observability';
 import { securityContext, withSecurityContext, type SecurityContext } from './security-context';
 import { transaction } from './transaction';
+import {boundedInteger} from './limits';
+import {metric} from '@eap/observability';
 import { argumentsHash } from './approval-crypto';
 import type { ApprovalGrant } from './approvals';
 export const roles = ['owner','admin','member','viewer'] as const;
@@ -149,8 +151,8 @@ export class SecurityStore {
   const ctx=securityContext();if(!ctx?.tenantId) throw new SecurityError(403,'FORBIDDEN');
   await client.query('SELECT id FROM tenants WHERE id=$1 FOR UPDATE',[ctx.tenantId]);
   await this.authorize('agent:execute',client);
-  const active=await client.query("SELECT 1 FROM agent_runs WHERE tenant_id=$1 AND status IN ('pending','running','waiting_approval')",[ctx.tenantId]);
-  if((active.rowCount??0)>=4) throw new SecurityError(429,'CONCURRENT_RUN_LIMIT',5);
+  const code=(await client.query('SELECT eap_admit_job($1,$2,$3) AS code',[boundedInteger('AGENT_GLOBAL_ADMISSION_LIMIT',256,1,4096),boundedInteger('AGENT_TENANT_ADMISSION_LIMIT',4,1,64),boundedInteger('AGENT_TENANT_QUEUE_LIMIT',32,1,256)])).rows[0].code;
+  if(code!=='ACCEPT'){metric('agent_admission_rejections_total',1,{reason:code});throw new SecurityError(code==='GLOBAL_CAPACITY_LIMIT'?503:429,code,5);}
  }
  async resourceDenied(type:string,id:string):Promise<never> {await this.audit('resource.access',type,id,'deny','RESOURCE_UNAVAILABLE');throw new SecurityError(404,'NOT_FOUND');}
 }

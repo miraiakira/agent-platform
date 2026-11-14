@@ -6,8 +6,11 @@ export async function createTestDatabase() {
   const connectionString = process.env.TEST_DATABASE_URL;
   if (!connectionString) throw new Error("TEST_DATABASE_URL is required for integration tests");
   const admin = new Pool({ connectionString });
+  // Fixture maintenance pools must survive an intentional database restart.
+  admin.on('error',()=>{});
   const schema = `integration_${randomUUID().replaceAll("-", "")}`;
   const pool = new Pool({ connectionString, options: `-c search_path=${schema}` });
+  pool.on('error',()=>{});
   async function close() {
     await pool.end();
     try { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); }

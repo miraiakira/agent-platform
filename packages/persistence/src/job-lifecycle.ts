@@ -141,7 +141,8 @@ export class JobLifecycle {
       );
       return true;
     });
-    if (finalized && blockedRun) metric("agent_worker_blocked_jobs_total",1);
+    if (finalized && blockedRun){metric("agent_worker_blocked_jobs_total",1);metric("external_tool_uncertain_outcomes_total",1);}
+    if(finalized){metric("agent_job_completion_total",1,{status:blockedRun?"interrupted":input.status});if(blockedRun||input.status!=="completed")metric("agent_job_failures_total",1,{status:blockedRun?"interrupted":input.status});}
     return finalized;
   }
 

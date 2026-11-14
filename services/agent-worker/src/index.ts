@@ -1,10 +1,10 @@
 import {KnowledgeStore,registerKnowledgeTools,runKnowledgeWorker} from '@eap/knowledge';
-import { initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observability";
+import { metric,initTelemetry, shutdownTelemetry, log, errorCode } from "@eap/observability";
 import { runEvaluationWorker } from "@eap/evaluation";
 import { randomUUID } from "node:crypto";
 import { createModelProvider } from "@eap/ai";
 import { createBusinessTools } from "@eap/tools";
-import { createRuntimePool, ApprovalStore, SecurityStore, AgentJobQueue, AgentEventStore, PersistenceStore, JobLifecycle } from "@eap/persistence";
+import { assertWorkerProductionSafety,boundedInteger,createRuntimePool, ApprovalStore, SecurityStore, AgentJobQueue, AgentEventStore, PersistenceStore, JobLifecycle } from "@eap/persistence";
 import { AgentExecutor } from "./executor";
 import { runWorker } from "./worker";
 
@@ -15,6 +15,7 @@ function positive(name: string, fallback: number) {
 }
 
 async function main() {
+  assertWorkerProductionSafety();
   initTelemetry({ service: "eap-agent-worker" });
   const providerName = process.env.LLM_PROVIDER ?? "mock";
   if (providerName !== "mock" && providerName !== "deepseek") throw new Error("Unsupported worker LLM_PROVIDER");
@@ -33,15 +34,18 @@ async function main() {
     const knowledge=new KnowledgeStore(pool);
     const tools=createBusinessTools({baseURL:process.env.BUSINESS_API_URL??'http://127.0.0.1:8080',apiKey:process.env.BUSINESS_API_KEY,authorize:(name,args,context)=>security.authorizeTool(name,args,context)});
     registerKnowledgeTools(tools,knowledge);
+    const workerId=process.env.WORKER_ID??`agent-worker-${randomUUID()}`;
+    const concurrency=boundedInteger('WORKER_CONCURRENCY',1,1,8);
     await Promise.all([runKnowledgeWorker(knowledge,shutdown.signal),runEvaluationWorker({db:pool,workerId:`eval-${process.pid}`,signal:shutdown.signal}),runWorker({
       approvals, queue: new AgentJobQueue(pool, true), lifecycle,
       executor: new AgentExecutor({ approvals, store: new PersistenceStore(pool), events: new AgentEventStore(pool), lifecycle, security, provider, model: process.env.LLM_MODEL,
         tools, knowledge,
         maxDurationMs: positive("WORKER_MAX_DURATION_MS", 60_000),
       }),
-      workerId: process.env.WORKER_ID ?? `agent-worker-${randomUUID()}`,
+      workerId,shutdownGraceMs:boundedInteger('WORKER_SHUTDOWN_GRACE_MS',5000,0,60000),
+      snapshot:async()=>{const s=(await pool.query('SELECT * FROM eap_worker_snapshot($1,$2)',[workerId,concurrency])).rows[0];metric('agent_jobs_queued',Number(s.queued));metric('agent_jobs_running',Number(s.running));metric('agent_workers_live',Number(s.live_workers));metric('agent_worker_last_seen_seconds',Date.now()/1000);metric('agent_queue_oldest_seconds',Number(s.oldest_seconds));metric('postgres_pool_capacity',boundedInteger('PG_POOL_MAX',10,1,32));metric('postgres_pool_connections',pool.totalCount);metric('postgres_pool_waiting',pool.waitingCount);},
       signal: shutdown.signal,
-      concurrency: positive("WORKER_CONCURRENCY", 1),
+      concurrency,
       leaseSeconds: positive("WORKER_LEASE_SECONDS", 30),
       pollIntervalMs: positive("WORKER_POLL_INTERVAL_MS", 1000),
     })]);
